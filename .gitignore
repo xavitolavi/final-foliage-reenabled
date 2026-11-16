@@ -1,0 +1,16 @@
+# generated / game-derived files (never commit these)
+extract/
+build/
+release/FinalFoliageReenabled_v*/
+*.zip
+*.pak
+*.ushaderbytecode
+*.exe
+*.dll
+*.obj
+*.lib
+*.exp
+*.pdb
+tools/dxc/
+tools/repak/
+__pycache__/
