@@ -17,11 +17,11 @@ BEGIN
         BLOCK "040904B0"          /* U.S. English, Unicode */
         BEGIN
             VALUE "CompanyName",      "XaviFlorit"
-            VALUE "FileDescription",  "Final Foliage Reenabled - foliage interaction mod for FINAL FANTASY VII REBIRTH"
+            VALUE "FileDescription",  "Final Foliage Reenabled - foliage interaction mod for FINAL FANTASY VII REBIRTH (loads as winmm.dll)"
             VALUE "FileVersion",      FF_VERSION_STR
             VALUE "InternalName",     "FinalFoliage"
             VALUE "LegalCopyright",   "Copyright (C) 2026 XaviFlorit. MIT License. Not affiliated with Square Enix."
-            VALUE "OriginalFilename", "FinalFoliage.dll"
+            VALUE "OriginalFilename", "winmm.dll"
             VALUE "ProductName",      "Final Foliage Reenabled"
             VALUE "ProductVersion",   FF_VERSION_STR
             VALUE "Comments",         "Source: https://github.com/xavitolavi/final-foliage-reenabled"

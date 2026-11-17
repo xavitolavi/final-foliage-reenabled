@@ -16,17 +16,31 @@ Everything is built from this source plus files from your own copy of the game. 
 
 Run all commands from the repository root. Wherever a command contains `<game>`, use your game folder.
 
-## 1. The DLL (`FinalFoliage.dll`)
+## 1. The DLL (`winmm.dll`)
 ```
 dll\build.bat
 ```
-This produces `dll\FinalFoliage.dll`. `build.bat` compiles `dll\version.rc` (the file's name/author/version metadata) and links it in. `build.bat` expects Visual Studio 2022 Community in its default folder; edit the `vcvars64.bat` path if yours is elsewhere.
+This produces `dll\winmm.dll`. `build.bat` expects Visual Studio 2022 Community in its default folder; edit the `vcvars64.bat` path if yours is elsewhere. It:
+- compiles `dll\version.rc` (the file's name/author/version metadata);
+- assembles `dll\winmm_proxy.asm`, the 181 forwarding stubs exported through `dll\winmm.def`;
+- compiles and links the mod.
+
+The game imports `WINMM.dll`, so Windows loads this `winmm.dll` from the game folder at startup. It forwards every winmm call to `System32\winmm.dll`, and the game exe is never modified.
+
+The proxy and wind-patch sources are generated and committed. Regenerate them only if they need to change:
+```
+python tools\gen_winmm_proxy.py
+set FF7R_GAME=<game>
+python tools\gen_windpatch.py
+```
+- `gen_winmm_proxy.py` reads the export table of your `System32\winmm.dll` and writes `winmm.def`, `winmm_proxy.asm` and `winmm_proxy.inc`.
+- `gen_windpatch.py` builds the wind-distance code cave from `patch_wind.py` against an unmodified `ff7rebirth_.exe` and writes `windpatch_data.inc`. The DLL writes it into the game's memory at startup.
 
 ### Sign the DLL (recommended)
 ```
 powershell -ExecutionPolicy Bypass -File tools\sign_dll.ps1
 ```
-This generates a free, self-signed code-signing certificate in your user certificate store the first time (reused afterwards), then signs and timestamps `dll\FinalFoliage.dll`. The signature is real; because it is self-signed rather than issued by a certificate authority, Windows lists the publisher as unverified. It proves the file has not been altered since you built it and gives it a named publisher, which reduces antivirus false positives on an otherwise unsigned DLL. The public certificate is written to `tools\FinalFoliage-codesign.cer` (safe to share); the private key never leaves your certificate store. For a verified publisher instead, buy a certificate from a certificate authority and sign with `signtool` — not required for a mod.
+This generates a free, self-signed code-signing certificate in your user certificate store the first time (reused afterwards), then signs and timestamps `dll\winmm.dll`. The signature is real; because it is self-signed rather than issued by a certificate authority, Windows lists the publisher as unverified. It proves the file has not been altered since you built it and gives it a named publisher, which reduces antivirus false positives on an otherwise unsigned DLL. The public certificate is written to `tools\FinalFoliage-codesign.cer` (safe to share); the private key never leaves your certificate store. For a verified publisher instead, buy a certificate from a certificate authority and sign with `signtool` — not required for a mod.
 
 ## 2. The shader pak (`zz_FinalFoliage_P.pak`)
 The pak holds the game's global shader archive, with the foliage mesh shaders patched to bend plants.
@@ -60,22 +74,13 @@ The pak holds the game's global shader archive, with the foliage mesh shaders pa
 
 ## 3. The release zip
 ```
-set FF7R_GAME=<game>
 python tools\make_release.py v1.0
 ```
-This writes `release\FinalFoliageReenabled_v1.0\` and the `.zip`.
-
-The installer script (`FinalFoliage-Setup.ps1`, generated from `tools\setup_template.ps1`) contains only the bytes it changes in `ff7rebirth_.exe`. The exe itself is never shipped.
-- The changes come from `patch_wind.py`:
-  - a 26-byte entry stub that calls `LoadLibraryA("FinalFoliage.dll")`;
-  - the wind-distance clamp;
-  - two section-size fields.
-- The changes are computed against an unmodified exe. Point `FF7R_ORIGINAL_EXE` at one if the exe in `<game>` is already modified.
-- The default `FinalFoliage.ini` is generated from `DEFAULT_INI` in `dll/foliage.inc` (`tools/make_default_ini.py`).
+This writes `release\FinalFoliageReenabled_v1.0\` and the `.zip`. The zip mirrors the game folder (`End\Binaries\Win64\winmm.dll`, `End\Content\Paks\zz_FinalFoliage_P.pak`). There is no installer, and `ff7rebirth_.exe` is never touched. `FinalFoliage.ini` isn't shipped: the DLL writes the default one (`DEFAULT_INI` in `dll/foliage.inc`) on first run, so updates never overwrite a player's settings.
 
 ## What each part does
 | Part | Files | Purpose |
 |---|---|---|
-| Exe patch | `patch_wind.py`, `tools/setup_template.ps1` | Loads the DLL at startup. Clamps the per-plant wind fade distance (`AnimationDecayRatio`) when plant records are uploaded to the GPU. |
+| Loader + wind distance | `dll/proxy_wind.inc`, `dll/winmm*`, `dll/windpatch_data.inc`, `patch_wind.py` | Loads as `winmm.dll` and forwards winmm calls to System32. Checks the game build, then writes a small hook into the game's memory that clamps the per-plant wind fade distance (`AnimationDecayRatio`) when plant records are uploaded to the GPU. `[wind] game_wind_reach_m` in the ini sets the distance. |
 | DLL | `dll/*.cpp`, `dll/*.inc` | Hooks `RHICreateUniformBuffer` and writes nearby character positions, attack gusts, per-material plant classes, wind settings and the trail into unused registers of the View uniform buffer. Detects characters touching plants (CPU copy of the plant positions), plays procedural rustles (XAudio2) and spawns the game's own Niagara effects through `UObject::ProcessEvent`. |
 | Shader patch | `tools/bend_patch.py`, `tools/build_bend.py` | Inserts the bend into the DXIL of the MassiveEnvironment foliage mesh shaders. The bend reads those View registers, leans each plant away from characters and adds procedural wind to plants that have none. |

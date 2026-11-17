@@ -24,8 +24,8 @@ static const struct { int sound; float vol, radius; const char* vfx; float scale
     { 0, 0.f, 0.f, "", 1.f, 0.f, 0.f },
     { 1, 0.385f, 35.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 0.9f, 15.f, 0.7f },     // flowers
     { 2, 0.08f, 90.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 0.4f, 10.f, 0.6f }, // grass patches
-    { 2, 0.35f, 70.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 0.48f, 10.f, 0.6f },      // leafy patches
-    { 3, 1.15f, 120.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 1.15f, 40.f, 0.8f },      // bushes
+    { 2, 0.15f, 70.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 0.48f, 10.f, 0.6f },      // leafy patches
+    { 3, 1.f, 120.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 1.15f, 40.f, 0.8f },      // bushes
     { 1, 0.5f, 60.f, "/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01", 0.4f, 10.f, 0.5f }, // other
 };
 static int g_fxSounds = 1, g_fxVfx = 1;
@@ -74,9 +74,12 @@ static const char* DEFAULT_INI =
 "dry_match=Dry,Dead,Dusty,Buffel\n"
 "dry_vfx=/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Sand_01\n"
 "\n"
-"; Gentle procedural wind for plants that have no wind animation of their own (scaled by each class's gain).\n"
+"; game_wind_reach_m: how far from the camera the game's own plant wind keeps playing (the unmodded game stops it at\n"
+";   2.5 m; 0 = never stops). A change applies to plants as they load; reload the area to apply it everywhere.\n"
+"; Gentle procedural wind for plants that have no wind animation of their own (scaled by each class's gain):\n"
 "; strength 0..1 (0 = off), speed = how fast it gusts, direction in degrees, faded out between fade_start_m and fade_end_m.\n"
 "[wind]\n"
+"game_wind_reach_m=80\n"
 "strength=0.15\n"
 "speed=1.0\n"
 "direction=45\n"
@@ -115,7 +118,7 @@ static const char* DEFAULT_INI =
 "mode=shear\n"
 "match=BlackBerry,VariousGreenLeaf,TropicalWideLeaf,Fern,BladeLeaf,Dichondra,Clover,Hosta,Ginger,MugWort,Heliotropium,AcaciaYoung\n"
 "sound=medium\n"
-"sound_volume=0.35\n"
+"sound_volume=0.15\n"
 "touch_radius_cm=70\n"
 "vfx=/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01\n"
 "vfx_scale=0.48\n"
@@ -128,7 +131,7 @@ static const char* DEFAULT_INI =
 "mode=lean\n"
 "match=T_Shrub_,T_Bush_\n"
 "sound=large\n"
-"sound_volume=1.15\n"
+"sound_volume=1\n"
 "touch_radius_cm=120\n"
 "vfx=/Game/Effect/Character/Property/VE0009_Chocobo/Particle/FX_VE0009_FootStep_Grass_01\n"
 "vfx_scale=1.15\n"
@@ -172,7 +175,7 @@ static bool LoadConfig() {
     g_iniTime = fa.ftLastWriteTime;
     ClassCfg cls[MAX_CLASSES] = {}; int ncls = 1; char excl[512] = ""; float rec = 1000.f, chs = 0.85f, trs = 1.f;
     strcpy(cls[0].name, "rigid");
-    float wst = 0.15f, wsp = 1.f, wdir = 45.f, wf0 = 65.f, wf1 = 80.f;
+    float wst = 0.15f, wsp = 1.f, wdir = 45.f, wf0 = 65.f, wf1 = 80.f, wreach = 80.f;
     for (int k = 0; k < MAX_CLASSES; ++k) {   // touch-effect defaults per stock class
         cls[k].hasColor = false; for (int j = 0; j < 4; ++j) cls[k].colMin[j] = cls[k].colMax[j] = 1.f;
         cls[k].leafSize = cls[k].leafRate = cls[k].leafLife = cls[k].leafSpread = -1.f;
@@ -207,6 +210,7 @@ static bool LoadConfig() {
             else if (!_stricmp(key, "direction")) wdir = (float)atof(val);
             else if (!_stricmp(key, "fade_start_m")) wf0 = (float)atof(val);
             else if (!_stricmp(key, "fade_end_m")) wf1 = (float)atof(val);
+            else if (!_stricmp(key, "game_wind_reach_m")) wreach = (float)atof(val);
         } else if (sec == 101) {
             if (!_stricmp(key, "sounds")) esnd = atoi(val);
             else if (!_stricmp(key, "vfx")) evfx = atoi(val);
@@ -252,6 +256,7 @@ static bool LoadConfig() {
     g_fxSounds = esnd; g_fxVfx = evfx; g_fxVolume = evol < 0.f ? 0.f : (evol > 1.f ? 1.f : evol);
     g_fxRange = (erange < 1.f ? 1.f : erange) * 100.f; g_fxMaxVfxPerSec = emax < 0.f ? 0.f : emax; g_fxMinSpeed = emin < 0.f ? 0.f : emin;
     g_cfgGen.fetch_add(1);
+    SetWindReach(wreach);
     Log("config loaded: %d classes, recovery %.0f ms, character strength %.2f, trail strength %.2f; wind %.2f speed %.2f dir %.0f fade %.0f-%.0f m",
         ncls - 1, g_recoveryMs, g_charStrength, g_trailStrength, g_windStrength, g_windSpeed, g_windDirDeg, g_windFadeStart / 100.f, g_windFadeEnd / 100.f);
     Log("touch effects: sounds %d vfx %d volume %.2f range %.0f m, max %.0f bursts/s, min speed %.0f cm/s", g_fxSounds, g_fxVfx, g_fxVolume, g_fxRange / 100.f, g_fxMaxVfxPerSec, g_fxMinSpeed);

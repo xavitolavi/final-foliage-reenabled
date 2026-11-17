@@ -11,33 +11,42 @@ WHAT IT DOES
 
 INSTALL
   1. Close the game.
-  2. Double-click  Install.bat
+  2. Copy the "End" folder from this download into your game folder
+     (the folder that already has an "End" folder). Say yes if Windows asks to merge folders.
   3. Play.
 
-  The installer finds the game by itself. If it asks, paste the game folder
-  (the one that contains the "End" folder).
+  That puts two files in place:
+      End\Binaries\Win64\winmm.dll          (the mod)
+      End\Content\Paks\zz_FinalFoliage_P.pak (the plant shaders)
+
+  The game folder is usually:
+      C:\Program Files (x86)\Steam\steamapps\common\FINAL FANTASY VII REBIRTH
+  (in Steam: right-click the game > Manage > Browse local files)
 
 
 UNINSTALL
-  Close the game and double-click  Uninstall.bat
-  Everything goes back to how it was.
+  Delete these files:
+      End\Binaries\Win64\winmm.dll
+      End\Content\Paks\zz_FinalFoliage_P.pak
+  (and FinalFoliage.ini / FinalFoliage.log in the Win64 folder if you want them gone too)
 
 
 AFTER A GAME UPDATE
-  The mod switches itself off (nothing breaks). Wait for a new version of the mod.
-  If you used Steam's "Verify integrity of game files", just run Install.bat again.
+  If the update changes the game too much, the mod switches itself off and the game
+  runs as normal. Wait for a new version of the mod.
 
 
 CHANGE SETTINGS (optional)
-  Open this file with Notepad:
+  The first time you play, the mod creates this file:
       <game folder>\End\Binaries\Win64\FinalFoliage.ini
-  Change a number and save. It applies right away, even with the game running.
+  Open it with Notepad, change a number and save. It applies right away, even with the game running.
 
   The most useful ones:
     volume=          how loud the rustle sounds are (0 to 1)
     sounds=0         turns the sounds off
     vfx=0            turns the leaf bursts off
     gain=            how much a type of plant bends (in each [class] section; 0 = not at all)
+    game_wind_reach_m=   how far away plants keep moving in the wind (0 = no limit)
 
   To go back to the default settings, delete FinalFoliage.ini; the game creates a fresh one.
 
@@ -48,11 +57,12 @@ REQUIREMENTS
 
 
 GOOD TO KNOW
-  - Works together with ReShade, OptiScaler and texture mods.
-  - Don't combine it with other mods that change ff7rebirth_.exe.
+  - Works together with ReShade, OptiScaler, ShaderInjector and texture mods.
+  - The mod never changes the game's files; it is loaded by the game as winmm.dll.
+  - If another mod also uses a file called winmm.dll, only one of them can be installed.
   - Plant shadows don't bend, only the plants.
 
 
 SOMETHING WRONG?
-  Look for FinalFoliage.log next to FinalFoliage.ini and send it along with your report.
-  No log at all means the mod isn't installed: run Install.bat again.
+  Look for FinalFoliage.log in End\Binaries\Win64 and send it along with your report.
+  No log at all means the mod isn't installed: check that winmm.dll is in End\Binaries\Win64.

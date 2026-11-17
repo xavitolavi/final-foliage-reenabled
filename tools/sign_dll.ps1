@@ -7,11 +7,11 @@
   since you built it, plus a named publisher, which quiets many antivirus heuristics that flag
   unsigned, unlabelled DLLs.
 
-  Usage:  powershell -ExecutionPolicy Bypass -File tools\sign_dll.ps1 [path\to\FinalFoliage.dll]
-  Default target: dll\FinalFoliage.dll
+  Usage:  powershell -ExecutionPolicy Bypass -File tools\sign_dll.ps1 [path\to\winmm.dll]
+  Default target: dll\winmm.dll
 #>
 param(
-    [string]$Target = (Join-Path $PSScriptRoot "..\dll\FinalFoliage.dll"),
+    [string]$Target = (Join-Path $PSScriptRoot "..\dll\winmm.dll"),
     [string]$Subject = "CN=XaviFlorit, O=Final Foliage Reenabled"
 )
 $ErrorActionPreference = "Stop"

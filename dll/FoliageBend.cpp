@@ -1,4 +1,8 @@
-// Final Foliage Reenabled (FinalFoliage.dll) - feeds character positions to FF7 Rebirth's foliage shaders.
+// Final Foliage Reenabled (shipped as winmm.dll) - feeds character positions to FF7 Rebirth's foliage shaders.
+//
+// Loading: the game imports WINMM.dll, so Windows loads this DLL from the game folder at startup; it forwards
+// every winmm call to System32\winmm.dll and applies the wind-distance patch in memory (proxy_wind.inc). The game exe
+// on disk is never modified.
 //
 // How it works
 //  * A background thread scans GUObjectArray every 250 ms and caches every live object that derives from
@@ -494,6 +498,7 @@ static DWORD WINAPI NamesDiagThread(LPVOID) {
     return 0;
 }
 
+#include "proxy_wind.inc"
 #include "foliage.inc"
 #include "rustle.inc"
 #include "interact.inc"
@@ -506,7 +511,7 @@ static DWORD WINAPI MainThread(LPVOID) {
         Log("game build mismatch at RVA %#llx - Final Foliage Reenabled disabled (game update?)", (unsigned long long)RVA_SigSite);
         return 0;
     }
-    Log("Final Foliage Reenabled v1.0 loaded, base=%p", (void*)g_base);
+    Log("Final Foliage Reenabled v1.0 running, base=%p", (void*)g_base);
     while (!InstallHook()) Sleep(200);
     // log the class chain once so the SuperStruct offset can be verified
     for (int tries = 0; tries < 600; ++tries) {
@@ -536,14 +541,38 @@ static DWORD WINAPI MainThread(LPVOID) {
     }
 }
 
+// true when the running exe is the supported game build (bounds-checked, safe before the game starts)
+static bool IsSupportedBuild(uintptr_t base) {
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    uintptr_t size = nt->OptionalHeader.SizeOfImage;
+    if (RVA_SigSite + sizeof(SIG_BYTES) > size || WP_HOOK_RVA + sizeof(WP_HOOK_ORIG) > size || WP_CAVE_RVA + sizeof(WP_CAVE) > size) return false;
+    return memcmp(reinterpret_cast<void*>(base + RVA_SigSite), SIG_BYTES, sizeof(SIG_BYTES)) == 0;
+}
+
 BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = mod;
         DisableThreadLibraryCalls(mod);
+        InitWinmmProxy();   // always first: the game and other DLLs call winmm through this DLL
+        // only one copy of the mod per game process
+        wchar_t mx[64]; swprintf_s(mx, L"Local\\FinalFoliageReenabled.%lu", GetCurrentProcessId());
+        HANDLE m = CreateMutexW(nullptr, FALSE, mx);
+        if (!m || GetLastError() == ERROR_ALREADY_EXISTS) return TRUE;
         InitializeCriticalSection(&g_logLock);
         wchar_t path[MAX_PATH]; GetModuleFileNameW(mod, path, MAX_PATH);
-        wchar_t* slash = wcsrchr(path, L'\\'); if (slash) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"FinalFoliage.log");
+        wchar_t* slash = wcsrchr(path, L'\\');
+        if (slash) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"FinalFoliage.log");
         g_log = _wfopen(path, L"w");
+        GetModuleFileNameW(mod, path, MAX_PATH);
+        Log("Final Foliage Reenabled v1.0 loaded as %ls", slash ? wcsrchr(path, L'\\') + 1 : path);
+        g_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        if (!IsSupportedBuild(g_base)) {
+            Log("this game version is not supported (game update?) - Final Foliage Reenabled is off, the game runs unmodified");
+            return TRUE;
+        }
+        wchar_t ini[MAX_PATH], v[32]; IniPath(ini, L"FinalFoliage.ini");
+        GetPrivateProfileStringW(L"wind", L"game_wind_reach_m", L"80", v, 32, ini);
+        ApplyWindPatch(g_base, static_cast<float>(_wtof(v)));
         HANDLE h = CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
         if (h) CloseHandle(h);
     }
