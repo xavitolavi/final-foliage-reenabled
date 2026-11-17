@@ -11,6 +11,8 @@ release/FinalFoliageReenabled_v*/
 *.lib
 *.exp
 *.pdb
+*.res
+*.pfx
 tools/dxc/
 tools/repak/
 __pycache__/

@@ -65,7 +65,17 @@ with open(os.path.join(OUT, 'FinalFoliage-Setup.ps1'), 'w', encoding='utf-8-sig'
 for name, act in (('Install.bat', 'install'), ('Uninstall.bat', 'uninstall')):
     with open(os.path.join(OUT, name), 'w', newline='\r\n') as f:
         f.write('@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%%~dp0FinalFoliage-Setup.ps1" -Action %s %%*\r\npause\r\n' % act)
-shutil.copy2(os.path.join(ROOT, 'dll', 'FinalFoliage.dll'), os.path.join(OUT, 'mod'))
+# don't ship a DLL that is missing its version metadata or signature (both quiet AV false-positives)
+_dll = os.path.join(ROOT, 'dll', 'FinalFoliage.dll')
+_cmd = ("$ErrorActionPreference='Stop'; $f='%s';"
+        "Write-Output ([bool]((Get-Item -LiteralPath $f).VersionInfo.ProductName));"
+        "Write-Output ([bool]((Get-AuthenticodeSignature -LiteralPath $f).SignerCertificate))" % _dll.replace("'", "''"))
+_meta = subprocess.run(['powershell', '-NoProfile', '-Command', _cmd], capture_output=True, text=True)
+_ok = _meta.stdout.split()
+assert _ok[:2] == ['True', 'True'], (
+    'FinalFoliage.dll is missing version metadata or a signature — run dll\\build.bat then '
+    'tools\\sign_dll.ps1 before packaging. (%r)' % (_meta.stdout + _meta.stderr))
+shutil.copy2(_dll, os.path.join(OUT, 'mod'))
 shutil.copy2(os.path.join(ROOT, 'build', 'zz_FoliageBend_P.pak'), os.path.join(OUT, 'mod', 'zz_FinalFoliage_P.pak'))
 subprocess.check_call([sys.executable, os.path.join(ROOT, 'tools', 'make_default_ini.py'), os.path.join(OUT, 'mod', 'FinalFoliage.ini')])
 shutil.copy2(os.path.join(ROOT, 'release', 'README.txt'), OUT)

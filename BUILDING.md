@@ -20,7 +20,13 @@ Run all commands from the repository root. Wherever a command contains `<game>`,
 ```
 dll\build.bat
 ```
-This produces `dll\FinalFoliage.dll`. `build.bat` expects Visual Studio 2022 Community in its default folder; edit the `vcvars64.bat` path if yours is elsewhere.
+This produces `dll\FinalFoliage.dll`. `build.bat` compiles `dll\version.rc` (the file's name/author/version metadata) and links it in. `build.bat` expects Visual Studio 2022 Community in its default folder; edit the `vcvars64.bat` path if yours is elsewhere.
+
+### Sign the DLL (recommended)
+```
+powershell -ExecutionPolicy Bypass -File tools\sign_dll.ps1
+```
+This generates a free, self-signed code-signing certificate in your user certificate store the first time (reused afterwards), then signs and timestamps `dll\FinalFoliage.dll`. The signature is real; because it is self-signed rather than issued by a certificate authority, Windows lists the publisher as unverified. It proves the file has not been altered since you built it and gives it a named publisher, which reduces antivirus false positives on an otherwise unsigned DLL. The public certificate is written to `tools\FinalFoliage-codesign.cer` (safe to share); the private key never leaves your certificate store. For a verified publisher instead, buy a certificate from a certificate authority and sign with `signtool` — not required for a mod.
 
 ## 2. The shader pak (`zz_FinalFoliage_P.pak`)
 The pak holds the game's global shader archive, with the foliage mesh shaders patched to bend plants.

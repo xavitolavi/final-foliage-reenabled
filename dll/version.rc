@@ -1,0 +1,34 @@
+#include <winver.h>
+
+#define FF_VERSION      1,0,0,0
+#define FF_VERSION_STR  "1.0.0.0"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    FF_VERSION
+ PRODUCTVERSION FF_VERSION
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_DLL
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"          /* U.S. English, Unicode */
+        BEGIN
+            VALUE "CompanyName",      "XaviFlorit"
+            VALUE "FileDescription",  "Final Foliage Reenabled - foliage interaction mod for FINAL FANTASY VII REBIRTH"
+            VALUE "FileVersion",      FF_VERSION_STR
+            VALUE "InternalName",     "FinalFoliage"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 XaviFlorit. MIT License. Not affiliated with Square Enix."
+            VALUE "OriginalFilename", "FinalFoliage.dll"
+            VALUE "ProductName",      "Final Foliage Reenabled"
+            VALUE "ProductVersion",   FF_VERSION_STR
+            VALUE "Comments",         "Source: https://github.com/xavitolavi/final-foliage-reenabled"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 0x04B0   /* U.S. English, Unicode code page */
+    END
+END

@@ -5,7 +5,8 @@ import os, shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'release', 'FinalFoliageReenabled_source')
 FILES = [
-    'dll/FoliageBend.cpp', 'dll/foliage.inc', 'dll/rustle.inc', 'dll/interact.inc', 'dll/build.bat',
+    'dll/FoliageBend.cpp', 'dll/foliage.inc', 'dll/rustle.inc', 'dll/interact.inc', 'dll/build.bat', 'dll/version.rc',
+    'tools/sign_dll.ps1', 'tools/FinalFoliage-codesign.cer',
     'tools/shaderarc.py', 'tools/extract_shaders.py', 'tools/bend_patch.py', 'tools/build_bend.py', 'tools/make_archive.py',
     'tools/dxasm/dxasm.cpp',
     'patch_wind.py',
