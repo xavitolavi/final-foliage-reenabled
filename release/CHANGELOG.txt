@@ -1,0 +1,23 @@
+Final Foliage Reenabled - changelog
+===================================
+
+1.1
+- Performance: much faster in grassy areas. Each plant first checks whether a character, wake trail, sword swing
+  or spell is close enough to bend it, and only those plants run the full bending code. Plants that only sway in
+  the wind run the lighter wind-only path, and the rest skip the bending code entirely.
+- In a wide grass field the mod's cost dropped by about 75%. RTX 4060 Laptop GPU, 1920x1080, frame generation on:
+  unmodded game 68.8 FPS, 1.0 51.4 FPS, 1.1 63.2 FPS.
+- Bending, sword and spell reactions, wind, sounds and leaf bursts look and behave exactly as in 1.0.
+- Only zz_FinalFoliage_P.pak changed. winmm.dll is the same file as 1.0 (its log still says "v1.0"), and your
+  FinalFoliage.ini settings are kept.
+- Using POM Textures? Its Final Foliage core now includes these faster shaders too; update it as well.
+
+1.0
+- First release.
+- Grass, flowers and bushes bend when characters walk through them, and spring back behind them.
+- Sword swings and spells push plants around.
+- Plants keep moving in the wind up to 80 m away (a few metres in the unmodded game).
+- Plants that never moved now sway gently.
+- Soft rustle sounds and small leaf bursts when you brush past plants.
+- Settings in FinalFoliage.ini (sound volume, effects, bend strength per plant type, wind distance), applied live.
+- Loads as winmm.dll; never modifies the game's files.
