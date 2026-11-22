@@ -1,5 +1,24 @@
-Final Foliage Reenabled  -  living foliage for FINAL FANTASY VII REBIRTH (PC)
-============================================================================
+Final Foliage Reenabled 1.1  -  living foliage for FINAL FANTASY VII REBIRTH (PC)
+================================================================================
+
+
+WHAT'S NEW IN 1.1
+  - Much faster. Each plant now checks first whether anything is near it, and only plants
+    near a character, a sword swing or a spell run the full bending code. The rest skip it.
+    In a wide grass field the mod's cost dropped by about 75%. Tested on an RTX 4060 Laptop
+    GPU at 1920x1080 with frame generation on:
+        unmodded game     68.8 FPS
+        1.0               51.4 FPS
+        1.1               63.2 FPS
+  - Looks and plays exactly the same as 1.0.
+
+  Updating from 1.0: replace End\Content\Paks\zz_FinalFoliage_P.pak with the one from this
+  download. winmm.dll is unchanged (it still writes "v1.0" in its log; that's expected).
+  Your FinalFoliage.ini settings are kept.
+
+  Using POM Textures with its Final Foliage core? That core carries its own copy of the
+  plant shaders, so update it to the version made for Final Foliage 1.1 as well.
+  Otherwise you keep 1.0's speed.
 
 WHAT IT DOES
   - Grass, flowers and bushes bend when characters walk through them.
