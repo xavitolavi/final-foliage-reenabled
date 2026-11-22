@@ -64,7 +64,7 @@ class IR:
         cur, succ, order, defs = 'entry', {'entry': []}, ['entry'], {}
         for i in range(self.fstart + 1, self.fend):
             l = L[i]
-            m = re.match(r'^; <label>:(\d+)', l) or re.match(r'^(\d+):', l)
+            m = re.match(r'^; <label>:(\d+)', l) or re.match(r'^(\d+):', l) or re.match(r'^([A-Za-z_][\w.]*):', l)
             if m:
                 cur = '%' + m.group(1); order.append(cur); succ[cur] = []
                 continue
@@ -73,7 +73,7 @@ class IR:
                 defs[d.group(1)] = (i, cur, strip(d.group(2)))
             s = l.strip()
             if s.startswith('br ') or s.startswith('switch '):
-                succ[cur] += re.findall(r'label (%\d+)', l)
+                succ[cur] += re.findall(r'label (%[\w.]+)', l)
         preds = {b: [] for b in order}
         for b in order:
             for s in succ[b]:
@@ -253,386 +253,496 @@ def patch_ir(text, params=None):
             raise PatchError('%s not available at insertion point' % need)
 
     # ---- 4. the bend ----
+    # gen(chars, wind) emits the bend: chars = character slots + wake + attacks, wind = procedural wind (no-sway
+    # permutations only). The result is the offset (%gb_mx, %gb_my, %gb_mz).
+    def gen(chars, wind):
+        pm = re.search(r'!dx\.precise (!\d+)', text)
+        prec = (', !dx.precise ' + pm.group(1)) if pm else ''
+        c = fconst
+        g = []
+
+        def e(s, precise=True):
+            g.append('  ' + s + (prec if precise else ''))
+        def cb(name, reg):
+            e('%%%s = call %%dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %%dx.types.Handle %s, i32 %d)' % (name, view_handle, reg), False)
+            for k, comp in enumerate('xyzw'):
+                e('%%%s_%s = extractvalue %%dx.types.CBufRet.f32 %%%s, %d' % (name, comp, name, k), False)
+        # header written by FoliageBend.dll: only bend when it matches exactly
+        cb('gb_hd', VIEW_REG_HEADER)
+        for comp, val in zip('xyzw', MAGIC):
+            e('%%gb_hd_ok%s = fcmp oeq float %%gb_hd_%s, %s' % (comp, comp, c(val)), False)
+        e('%gb_hd_a = and i1 %gb_hd_okx, %gb_hd_oky', False)
+        e('%gb_hd_b = and i1 %gb_hd_okz, %gb_hd_okw', False)
+        e('%gb_valid = and i1 %gb_hd_a, %gb_hd_b', False)
+        # per-material foliage class from the DLL's table: slot = RenderDataPositions[i].w (0 = none), material = meshlet word.y >> 20
+        e('%%gb_pw = extractvalue %%dx.types.CBufRet.f32 %s, 3' % PLOAD, False)
+        e('%gb_slot = bitcast float %gb_pw to i32', False)
+        e('%%gb_mat = lshr i32 %s, 20' % YV, False)
+        e('%gb_hasslot = icmp ne i32 %gb_slot, 0', False)
+        e('%gb_sm1 = add i32 %gb_slot, -1', False)
+        e('%gb_md = lshr i32 %gb_mat, 3', False)
+        e('%gb_d0 = add i32 %gb_sm1, %gb_md', False)
+        e('%%gb_dc = call i32 @dx.op.binary.i32(i32 40, i32 %%gb_d0, i32 %d)' % (CLASS_TABLE_DWORDS - 1), False)   # UMin
+        e('%gb_dr = lshr i32 %gb_dc, 2', False)
+        e('%%gb_tsa = icmp ult i32 %%gb_dr, %d' % CLASS_TABLE_SEG_A_REGS, False)
+        e('%%gb_tbase = select i1 %%gb_tsa, i32 %d, i32 %d' % (VIEW_REG_CLASS_TABLE, VIEW_REG_CLASS_TABLE_B - CLASS_TABLE_SEG_A_REGS), False)
+        e('%gb_treg = add i32 %gb_dr, %gb_tbase', False)
+        e('%%gb_tl = call %%dx.types.CBufRet.i32 @dx.op.cbufferLoadLegacy.i32(i32 59, %%dx.types.Handle %s, i32 %%gb_treg)' % view_handle, False)
+        for k in range(4):
+            e('%%gb_t%d = extractvalue %%dx.types.CBufRet.i32 %%gb_tl, %d' % (k, k), False)
+        e('%gb_dk = and i32 %gb_dc, 3', False)
+        e('%gb_dk1 = icmp eq i32 %gb_dk, 1', False)
+        e('%gb_dk2 = icmp eq i32 %gb_dk, 2', False)
+        e('%gb_dk3 = icmp eq i32 %gb_dk, 3', False)
+        e('%gb_tw1 = select i1 %gb_dk1, i32 %gb_t1, i32 %gb_t0', False)
+        e('%gb_tw2 = select i1 %gb_dk2, i32 %gb_t2, i32 %gb_tw1', False)
+        e('%gb_tw = select i1 %gb_dk3, i32 %gb_t3, i32 %gb_tw2', False)
+        e('%gb_sh0 = and i32 %gb_mat, 7', False)
+        e('%gb_sh = shl i32 %gb_sh0, 2', False)
+        e('%gb_cv = lshr i32 %gb_tw, %gb_sh', False)
+        e('%gb_cls = and i32 %gb_cv, 15', False)
+        e('%gb_gr0 = lshr i32 %gb_cls, 2', False)
+        e('%%gb_gr = add i32 %%gb_gr0, %d' % VIEW_REG_CLASS_GAINS, False)
+        e('%%gb_gl = call %%dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %%dx.types.Handle %s, i32 %%gb_gr)' % view_handle, False)
+        for k in range(4):
+            e('%%gb_g%d = extractvalue %%dx.types.CBufRet.f32 %%gb_gl, %d' % (k, k), False)
+        e('%gb_gk = and i32 %gb_cls, 3', False)
+        e('%gb_gk1 = icmp eq i32 %gb_gk, 1', False)
+        e('%gb_gk2 = icmp eq i32 %gb_gk, 2', False)
+        e('%gb_gk3 = icmp eq i32 %gb_gk, 3', False)
+        e('%gb_gw1 = select i1 %gb_gk1, float %gb_g1, float %gb_g0', False)
+        e('%gb_gw2 = select i1 %gb_gk2, float %gb_g2, float %gb_gw1', False)
+        e('%gb_gws = select i1 %gb_gk3, float %gb_g3, float %gb_gw2', False)
+        e('%%gb_partc = fcmp olt float %%gb_gws, %s' % c(0.0), False)
+        e('%gb_part = and i1 %gb_partc, %gb_hasslot', False)
+        e('%gb_gw = call float @dx.op.unary.f32(i32 6, float %gb_gws)', False)        # |gain|
+        # distances are always measured from the plant pivot (per-vertex distances read as fish-eye); "shear" mode only
+        # changes how the lean is applied: bent from the ground by height instead of rotating the plant about its pivot
+        e('%%gb_refx = fadd float %s, %s' % (OX, c(0.0)))
+        e('%%gb_refy = fadd float %s, %s' % (OY, c(0.0)))
+        cb('gb_pvt', VIEW_REG_PREVIEWTRANSLATION)
+        # Per-plant rigid lean: distance/direction are measured from the plant pivot (OX,OY,OZ), so every vertex of a
+        # plant gets the same rotation (no tearing or stretching). Plants right under a character are squashed instead.
+        acc_x, acc_y, acc_q = c(0.0), c(0.0), c(0.0)
+        if chars:   # character slots, wake trails and attack sources (the expensive part)
+            for i, reg in enumerate(VIEW_REGS_SLOTS):
+                n = 'gb_s%d' % i
+                cb(n, reg)
+                e('%%%s_tx = fadd float %%%s_x, %%gb_pvt_x' % (n, n))
+                e('%%%s_ty = fadd float %%%s_y, %%gb_pvt_y' % (n, n))
+                e('%%%s_tz = fadd float %%%s_z, %%gb_pvt_z' % (n, n))
+                e('%%%s_vx = fsub float %%gb_refx, %%%s_tx' % (n, n))
+                e('%%%s_vy = fsub float %%gb_refy, %%%s_ty' % (n, n))
+                e('%%%s_vz0 = fsub float %s, %%%s_tz' % (n, OZ, n))
+                e('%%%s_vz = fadd float %%%s_vz0, %s' % (n, n, c(p['foot'])))            # pivot height relative to the feet
+                e('%%%s_vxx = fmul float %%%s_vx, %%%s_vx' % (n, n, n))
+                e('%%%s_vyy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
+                e('%%%s_d2 = fadd float %%%s_vxx, %%%s_vyy' % (n, n, n))
+                e('%%%s_d2c = call float @dx.op.binary.f32(i32 35, float %%%s_d2, float %s)' % (n, n, c(1.0)))
+                e('%%%s_d = call float @dx.op.unary.f32(i32 24, float %%%s_d2c)' % (n, n))
+                e('%%%s_fr = fmul float %%%s_d, %s' % (n, n, c(1.0 / p['radius'])))
+                e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
+                e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
+                e('%%%s_f1 = fmul float %%%s_t, %%%s_t' % (n, n, n))
+                e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
+                e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['vgate'] + 100.0), n))
+                e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
+                e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
+                e('%%%s_wc = call float @dx.op.unary.f32(i32 7, float %%%s_w)' % (n, n))
+                e('%%%s_f2 = fmul float %%%s_f1, %%%s_gz' % (n, n, n))
+                e('%%%s_f = fmul float %%%s_f2, %%%s_wc' % (n, n, n))
+                e('%%%s_k = fdiv float %%%s_f, %%%s_d' % (n, n, n))
+                e('%%%s_mx = fmul float %%%s_vx, %%%s_k' % (n, n, n))
+                e('%%%s_my = fmul float %%%s_vy, %%%s_k' % (n, n, n))
+                e('%%%s_ax = fadd float %s, %%%s_mx' % (n, acc_x, n))
+                e('%%%s_ay = fadd float %s, %%%s_my' % (n, acc_y, n))
+                e('%%%s_tr0 = fmul float %%%s_d, %s' % (n, n, c(1.0 / p['trample_r'])))
+                e('%%%s_tr1 = fsub float %s, %%%s_tr0' % (n, c(1.0), n))
+                e('%%%s_tr = call float @dx.op.unary.f32(i32 7, float %%%s_tr1)' % (n, n))
+                e('%%%s_qf = fmul float %%%s_tr, %%%s_f' % (n, n, n))
+                e('%%%s_aq = fadd float %s, %%%s_qf' % (n, acc_q, n))
+                acc_x, acc_y, acc_q = '%%%s_ax' % n, '%%%s_ay' % n, '%%%s_aq' % n
+            # Wake segments from FoliageBend.dll: A = (x, y, z, strength) newer end, B = (x, y, z, strength) older end.
+            # A plant leans by its distance to the closest point on the segment (strength interpolated along it), outward from
+            # the path and, right on the path, along the direction of travel. The wake only fills what the characters' own bend
+            # leaves (room = 1 - |characters|), so it slows the spring-back without adding to the initial push.
+            e('%%gb_cxx = fmul float %s, %s' % (acc_x, acc_x))
+            e('%%gb_cyy = fmul float %s, %s' % (acc_y, acc_y))
+            e('%gb_cl2 = fadd float %gb_cxx, %gb_cyy')
+            e('%gb_cl = call float @dx.op.unary.f32(i32 24, float %gb_cl2)')
+            wx, wy, wm = c(0.0), c(0.0), c(0.0)
+            for j, (ra, rb) in enumerate(VIEW_REGS_WAKE):
+                n = 'gb_w%d' % j
+                cb(n + 'a', ra)
+                cb(n + 'b', rb)
+                e('%%%s_ax = fadd float %%%sa_x, %%gb_pvt_x' % (n, n))
+                e('%%%s_ay = fadd float %%%sa_y, %%gb_pvt_y' % (n, n))
+                e('%%%s_az = fadd float %%%sa_z, %%gb_pvt_z' % (n, n))
+                e('%%%s_ex = fsub float %%%sb_x, %%%sa_x' % (n, n, n))
+                e('%%%s_ey = fsub float %%%sb_y, %%%sa_y' % (n, n, n))
+                e('%%%s_ez = fsub float %%%sb_z, %%%sa_z' % (n, n, n))
+                e('%%%s_vx = fsub float %%gb_refx, %%%s_ax' % (n, n))
+                e('%%%s_vy = fsub float %%gb_refy, %%%s_ay' % (n, n))
+                e('%%%s_exx = fmul float %%%s_ex, %%%s_ex' % (n, n, n))
+                e('%%%s_eyy = fmul float %%%s_ey, %%%s_ey' % (n, n, n))
+                e('%%%s_ee0 = fadd float %%%s_exx, %%%s_eyy' % (n, n, n))
+                e('%%%s_ee = call float @dx.op.binary.f32(i32 35, float %%%s_ee0, float %s)' % (n, n, c(1.0)))
+                e('%%%s_dp0 = fmul float %%%s_vx, %%%s_ex' % (n, n, n))
+                e('%%%s_dp1 = fmul float %%%s_vy, %%%s_ey' % (n, n, n))
+                e('%%%s_dp = fadd float %%%s_dp0, %%%s_dp1' % (n, n, n))
+                e('%%%s_t0 = fdiv float %%%s_dp, %%%s_ee' % (n, n, n))
+                e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_t0)' % (n, n))
+                e('%%%s_qx0 = fmul float %%%s_ex, %%%s_t' % (n, n, n))
+                e('%%%s_qy0 = fmul float %%%s_ey, %%%s_t' % (n, n, n))
+                e('%%%s_qz0 = fmul float %%%s_ez, %%%s_t' % (n, n, n))
+                e('%%%s_ox = fsub float %%%s_vx, %%%s_qx0' % (n, n, n))           # plant - closest point (horizontal)
+                e('%%%s_oy = fsub float %%%s_vy, %%%s_qy0' % (n, n, n))
+                e('%%%s_qz = fadd float %%%s_az, %%%s_qz0' % (n, n, n))
+                e('%%%s_oxx = fmul float %%%s_ox, %%%s_ox' % (n, n, n))
+                e('%%%s_oyy = fmul float %%%s_oy, %%%s_oy' % (n, n, n))
+                e('%%%s_od20 = fadd float %%%s_oxx, %%%s_oyy' % (n, n, n))
+                e('%%%s_od2 = call float @dx.op.binary.f32(i32 35, float %%%s_od20, float %s)' % (n, n, c(1.0)))
+                e('%%%s_od = call float @dx.op.unary.f32(i32 24, float %%%s_od2)' % (n, n))
+                e('%%%s_sd = fsub float %%%sb_w, %%%sa_w' % (n, n, n))
+                e('%%%s_st0 = fmul float %%%s_sd, %%%s_t' % (n, n, n))
+                e('%%%s_s = fadd float %%%sa_w, %%%s_st0' % (n, n, n))
+                e('%%%s_fr = fmul float %%%s_od, %s' % (n, n, c(1.0 / p['radius'])))
+                e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
+                e('%%%s_fs = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
+                e('%%%s_ff = fmul float %%%s_fs, %%%s_fs' % (n, n, n))
+                e('%%%s_vz0 = fsub float %s, %%%s_qz' % (n, OZ, n))
+                e('%%%s_vz = fadd float %%%s_vz0, %s' % (n, n, c(p['foot'])))
+                e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
+                e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['vgate'] + 100.0), n))
+                e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
+                e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
+                e('%%%s_m0 = fmul float %%%s_ff, %%%s_gz' % (n, n, n))
+                e('%%%s_sc = call float @dx.op.unary.f32(i32 7, float %%%s_s)' % (n, n))
+                e('%%%s_m = fmul float %%%s_m0, %%%s_sc' % (n, n, n))
+                # direction: outward from the path, blending into the travel direction (A - B) on the path itself
+                e('%%%s_side0 = fmul float %%%s_od, %s' % (n, n, c(1.0 / 40.0)))
+                e('%%%s_side = call float @dx.op.unary.f32(i32 7, float %%%s_side0)' % (n, n))
+                e('%%%s_el = call float @dx.op.unary.f32(i32 24, float %%%s_ee)' % (n, n))
+                e('%%%s_on = fsub float %s, %%%s_side' % (n, c(1.0), n))
+                e('%%%s_tk = fdiv float %%%s_on, %%%s_el' % (n, n, n))           # on the path: lean back, as the character left it
+                e('%%%s_sk = fdiv float %%%s_side, %%%s_od' % (n, n, n))
+                e('%%%s_dx0 = fmul float %%%s_ox, %%%s_sk' % (n, n, n))
+                e('%%%s_dx1 = fmul float %%%s_ex, %%%s_tk' % (n, n, n))
+                e('%%%s_dx = fadd float %%%s_dx0, %%%s_dx1' % (n, n, n))
+                e('%%%s_dy0 = fmul float %%%s_oy, %%%s_sk' % (n, n, n))
+                e('%%%s_dy1 = fmul float %%%s_ey, %%%s_tk' % (n, n, n))
+                e('%%%s_dy = fadd float %%%s_dy0, %%%s_dy1' % (n, n, n))
+                e('%%%s_dxx = fmul float %%%s_dx, %%%s_dx' % (n, n, n))
+                e('%%%s_dyy = fmul float %%%s_dy, %%%s_dy' % (n, n, n))
+                e('%%%s_dl20 = fadd float %%%s_dxx, %%%s_dyy' % (n, n, n))
+                e('%%%s_dl2 = call float @dx.op.binary.f32(i32 35, float %%%s_dl20, float %s)' % (n, n, c(1e-8)))
+                e('%%%s_dl = call float @dx.op.unary.f32(i32 24, float %%%s_dl2)' % (n, n))
+                e('%%%s_mk = fdiv float %%%s_m, %%%s_dl' % (n, n, n))
+                e('%%%s_mx = fmul float %%%s_dx, %%%s_mk' % (n, n, n))
+                e('%%%s_my = fmul float %%%s_dy, %%%s_mk' % (n, n, n))
+                # strongest segment wins (summing made plants near a segment joint tilt a second time)
+                e('%%%s_gt = fcmp ogt float %%%s_m, %s' % (n, n, wm), False)
+                e('%%%s_wx = select i1 %%%s_gt, float %%%s_mx, float %s' % (n, n, n, wx), False)
+                e('%%%s_wy = select i1 %%%s_gt, float %%%s_my, float %s' % (n, n, n, wy), False)
+                e('%%%s_wm = select i1 %%%s_gt, float %%%s_m, float %s' % (n, n, n, wm), False)
+                wx, wy, wm = '%%%s_wx' % n, '%%%s_wy' % n, '%%%s_wm' % n
+            # max-combine: add only the part of the wake that exceeds the characters' own bend (no second push, no extra
+            # bend around a character standing still); the wake takes over continuously as a character walks away
+            e('%%gb_wxx = fmul float %s, %s' % (wx, wx))
+            e('%%gb_wyy = fmul float %s, %s' % (wy, wy))
+            e('%gb_wl20 = fadd float %gb_wxx, %gb_wyy')
+            e('%%gb_wl2 = call float @dx.op.binary.f32(i32 35, float %%gb_wl20, float %s)' % c(1e-8))
+            e('%gb_wl = call float @dx.op.unary.f32(i32 24, float %gb_wl2)')
+            e('%gb_wex0 = fsub float %gb_wl, %gb_cl')
+            e('%%gb_wex = call float @dx.op.binary.f32(i32 35, float %%gb_wex0, float %s)' % c(0.0))
+            e('%gb_wsc = fdiv float %gb_wex, %gb_wl')
+            e('%%gb_wkx = fmul float %s, %%gb_wsc' % wx)
+            e('%%gb_wky = fmul float %s, %%gb_wsc' % wy)
+            e('%%gb_cwx = fadd float %s, %%gb_wkx' % acc_x)
+            e('%%gb_cwy = fadd float %s, %%gb_wky' % acc_y)
+            acc_x, acc_y = '%gb_cwx', '%gb_cwy'
+            # Attack sources from FoliageBend.dll (weapon swing gusts; later shockwaves):
+            #   A = (x, y, z world, radius)   B = (dirx, diry, strength, ring)
+            # dir == 0 -> radial push away from the source; otherwise push along dir. Empty slots have radius 0 -> no effect.
+            for j, (ra, rb) in enumerate(VIEW_REGS_ATTACK):
+                n = 'gb_a%d' % j
+                cb(n + 'p', ra)
+                cb(n + 'q', rb)
+                e('%%%s_tx = fadd float %%%sp_x, %%gb_pvt_x' % (n, n))
+                e('%%%s_ty = fadd float %%%sp_y, %%gb_pvt_y' % (n, n))
+                e('%%%s_tz = fadd float %%%sp_z, %%gb_pvt_z' % (n, n))
+                e('%%%s_vx = fsub float %%gb_refx, %%%s_tx' % (n, n))
+                e('%%%s_vy = fsub float %%gb_refy, %%%s_ty' % (n, n))
+                e('%%%s_vz = fsub float %s, %%%s_tz' % (n, OZ, n))
+                e('%%%s_vxx = fmul float %%%s_vx, %%%s_vx' % (n, n, n))
+                e('%%%s_vyy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
+                e('%%%s_d2 = fadd float %%%s_vxx, %%%s_vyy' % (n, n, n))
+                e('%%%s_d2c = call float @dx.op.binary.f32(i32 35, float %%%s_d2, float %s)' % (n, n, c(1.0)))
+                e('%%%s_d = call float @dx.op.unary.f32(i32 24, float %%%s_d2c)' % (n, n))
+                e('%%%s_rc = call float @dx.op.binary.f32(i32 35, float %%%sp_w, float %s)' % (n, n, c(1e-3)))
+                e('%%%s_fr = fdiv float %%%s_d, %%%s_rc' % (n, n, n))
+                e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
+                e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
+                e('%%%s_tt = fmul float %%%s_t, %%%s_t' % (n, n, n))
+                e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
+                e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['attack_vgate'] + 100.0), n))
+                e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
+                e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
+                e('%%%s_s = call float @dx.op.unary.f32(i32 7, float %%%sq_z)' % (n, n))
+                e('%%%s_f1 = fmul float %%%s_tt, %%%s_gz' % (n, n, n))
+                e('%%%s_f2 = fmul float %%%s_f1, %%%s_s' % (n, n, n))
+                e('%%%s_f = fmul float %%%s_f2, %s' % (n, n, c(p['attack_gain'])))
+                e('%%%s_rx = fdiv float %%%s_vx, %%%s_d' % (n, n, n))
+                e('%%%s_ry = fdiv float %%%s_vy, %%%s_d' % (n, n, n))
+                e('%%%s_zx = fcmp oeq float %%%sq_x, %s' % (n, n, c(0.0)), False)
+                e('%%%s_zy = fcmp oeq float %%%sq_y, %s' % (n, n, c(0.0)), False)
+                e('%%%s_rad = and i1 %%%s_zx, %%%s_zy' % (n, n, n), False)
+                e('%%%s_ux = select i1 %%%s_rad, float %%%s_rx, float %%%sq_x' % (n, n, n, n), False)
+                e('%%%s_uy = select i1 %%%s_rad, float %%%s_ry, float %%%sq_y' % (n, n, n, n), False)
+                e('%%%s_mx = fmul float %%%s_ux, %%%s_f' % (n, n, n))
+                e('%%%s_my = fmul float %%%s_uy, %%%s_f' % (n, n, n))
+                e('%%%s_ax = fadd float %s, %%%s_mx' % (n, acc_x, n))
+                e('%%%s_ay = fadd float %s, %%%s_my' % (n, acc_y, n))
+                acc_x, acc_y = '%%%s_ax' % n, '%%%s_ay' % n
+        if H is None and wind:
+            # Procedural wind for plants without baked sway (gated later by the material class gain, like the bend):
+            # lean = dir * strength * gust(t, phase) + small cross-wind flutter; phase from the plant's WORLD position so
+            # neighbours move slightly out of step; fades out with camera distance (pivot is camera-relative).
+            cb('gb_wd_wnd', VIEW_REG_WIND)
+            cb('gb_wd_wnd2', VIEW_REG_WIND2)
+            cb('gb_wd_tm', VIEW_REG_GAMETIME)
+            e('%gb_wd_wpx = fsub float ' + OX + ', %gb_pvt_x')
+            e('%gb_wd_wpy = fsub float ' + OY + ', %gb_pvt_y')
+            e('%%gb_wd_ph0 = fmul float %%gb_wd_wpx, %s' % c(0.0031))
+            e('%%gb_wd_ph1 = fmul float %%gb_wd_wpy, %s' % c(0.0043))
+            e('%gb_wd_ph = fadd float %gb_wd_ph0, %gb_wd_ph1')
+            e('%gb_wd_ts = fmul float %gb_wd_tm_z, %gb_wd_wnd_w')
+            e('%%gb_wd_a1 = fmul float %%gb_wd_ts, %s' % c(1.7))
+            e('%gb_wd_a1p = fadd float %gb_wd_a1, %gb_wd_ph')
+            e('%gb_wd_s1 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a1p)')
+            e('%%gb_wd_a2 = fmul float %%gb_wd_ts, %s' % c(0.43))
+            e('%%gb_wd_ph2 = fmul float %%gb_wd_ph, %s' % c(0.37))
+            e('%gb_wd_a2p = fadd float %gb_wd_a2, %gb_wd_ph2')
+            e('%gb_wd_s2 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a2p)')
+            e('%%gb_wd_a3 = fmul float %%gb_wd_ts, %s' % c(3.1))
+            e('%%gb_wd_ph3 = fmul float %%gb_wd_ph, %s' % c(1.9))
+            e('%gb_wd_a3p = fadd float %gb_wd_a3, %gb_wd_ph3')
+            e('%gb_wd_s3 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a3p)')
+            # gust = (0.55 + 0.45 sin1) * (0.65 + 0.35 sin2) in [0.065, 1]
+            e('%%gb_wd_g10 = fmul float %%gb_wd_s1, %s' % c(0.45))
+            e('%%gb_wd_g1 = fadd float %%gb_wd_g10, %s' % c(0.55))
+            e('%%gb_wd_g20 = fmul float %%gb_wd_s2, %s' % c(0.35))
+            e('%%gb_wd_g2 = fadd float %%gb_wd_g20, %s' % c(0.65))
+            e('%gb_wd_gu = fmul float %gb_wd_g1, %gb_wd_g2')
+            # distance fade
+            e('%gb_wd_cxx2 = fmul float ' + OX + ', ' + OX)
+            e('%gb_wd_cyy2 = fmul float ' + OY + ', ' + OY)
+            e('%gb_wd_czz2 = fmul float ' + OZ + ', ' + OZ)
+            e('%gb_wd_cd20 = fadd float %gb_wd_cxx2, %gb_wd_cyy2')
+            e('%gb_wd_cd2 = fadd float %gb_wd_cd20, %gb_wd_czz2')
+            e('%gb_wd_cdist = call float @dx.op.unary.f32(i32 24, float %gb_wd_cd2)')
+            e('%gb_wd_fd0 = fsub float %gb_wd_cdist, %gb_wd_wnd2_x')
+            e('%gb_wd_fd1 = fmul float %gb_wd_fd0, %gb_wd_wnd2_y')
+            e('%%gb_wd_fd2 = fsub float %s, %%gb_wd_fd1' % c(1.0))
+            e('%gb_wd_fade = call float @dx.op.unary.f32(i32 7, float %gb_wd_fd2)')
+            e('%gb_wd_wamp0 = fmul float %gb_wd_wnd_z, %gb_wd_fade')
+            e('%gb_wd_wl = fmul float %gb_wd_wamp0, %gb_wd_gu')
+            e('%%gb_wd_wf0 = fmul float %%gb_wd_wamp0, %s' % c(0.2))
+            e('%gb_wd_wf = fmul float %gb_wd_wf0, %gb_wd_s3')          # cross-wind flutter
+            e('%gb_wd_wx0 = fmul float %gb_wd_wnd_x, %gb_wd_wl')
+            e('%gb_wd_wx1 = fmul float %gb_wd_wnd_y, %gb_wd_wf')
+            e('%gb_wd_wvx = fsub float %gb_wd_wx0, %gb_wd_wx1')
+            e('%gb_wd_wy0 = fmul float %gb_wd_wnd_y, %gb_wd_wl')
+            e('%gb_wd_wy1 = fmul float %gb_wd_wnd_x, %gb_wd_wf')
+            e('%gb_wd_wvy = fadd float %gb_wd_wy0, %gb_wd_wy1')
+            e('%%gb_awx = fadd float %s, %%gb_wd_wvx' % acc_x)
+            e('%%gb_awy = fadd float %s, %%gb_wd_wvy' % acc_y)
+            acc_x, acc_y = '%gb_awx', '%gb_awy'
+        e('%%gb_axx = fmul float %s, %s' % (acc_x, acc_x))
+        e('%%gb_ayy = fmul float %s, %s' % (acc_y, acc_y))
+        e('%gb_al2 = fadd float %gb_axx, %gb_ayy')
+        e('%%gb_al2c = call float @dx.op.binary.f32(i32 35, float %%gb_al2, float %s)' % c(1e-8))
+        e('%gb_al = call float @dx.op.unary.f32(i32 24, float %gb_al2c)')
+        e('%%gb_alc = call float @dx.op.binary.f32(i32 36, float %%gb_al, float %s)' % c(1.0))   # fmin
+        e('%gb_inv = fdiv float 1.000000e+00, %gb_al')
+        e('%%gb_ux = fmul float %s, %%gb_inv' % acc_x)
+        e('%%gb_uy = fmul float %s, %%gb_inv' % acc_y)
+        # gates: plant size (record +108), plant has baked sway, DLL header valid
+        if H is None:
+            # no-sway permutation (no plant record): bend only materials the DLL classified as foliage
+            e('%%gb_cg = select i1 %%gb_hasslot, float %%gb_gw, float %s' % c(0.0), False)
+            e('%%gb_gs = select i1 %%gb_valid, float %%gb_cg, float %s' % c(0.0), False)
+        else:
+            e('%%gb_rr = call %%dx.types.ResRet.f32 @dx.op.rawBufferLoad.f32(i32 139, %%dx.types.Handle %s, i32 %s, i32 %d, i8 1, i32 4)' % (H, IDX, PRIM_SPHERE_RADIUS), False)
+            e('%gb_rad = extractvalue %dx.types.ResRet.f32 %gb_rr, 0', False)
+            e('%%gb_gs0 = fsub float %s, %%gb_rad' % c(p['size_none']))
+            e('%%gb_gs1 = fmul float %%gb_gs0, %s' % c(1.0 / (p['size_none'] - p['size_full'])))
+            e('%gb_gs2 = call float @dx.op.unary.f32(i32 7, float %gb_gs1)')
+            e('%%gb_nkr = call %%dx.types.ResRet.i32 @dx.op.rawBufferLoad.i32(i32 139, %%dx.types.Handle %s, i32 %s, i32 %d, i8 1, i32 4)' % (H, IDX, PRIM_NUMDEFORMKEYS), False)
+            e('%gb_nk = extractvalue %dx.types.ResRet.i32 %gb_nkr, 0', False)
+            e('%gb_has = icmp ne i32 %gb_nk, 0', False)
+            e('%gb_on = and i1 %gb_has, %gb_valid' if not p.get('test_all') else '%gb_on = and i1 %gb_valid, %gb_valid', False)
+            e('%%gb_gsr = select i1 %%gb_on, float %%gb_gs2, float %s' % c(0.0), False)
+            e('%%gb_cg = select i1 %%gb_hasslot, float %%gb_gw, float %s' % c(1.0), False)
+            e('%gb_gs = fmul float %gb_gsr, %gb_cg')
+        # lean angle and trample squash
+        e('%%gb_th0 = fmul float %%gb_alc, %s' % c(p['max_angle']))
+        e('%gb_th = fmul float %gb_th0, %gb_gs')
+        e('%%gb_q0 = call float @dx.op.binary.f32(i32 36, float %s, float %s)' % (acc_q, c(1.0)))
+        e('%%gb_q1 = fmul float %%gb_q0, %s' % c(p['squash']))
+        e('%gb_q = fmul float %gb_q1, %gb_gs')
+        e('%%gb_qs = fsub float %s, %%gb_q' % c(1.0))
+        e('%%gb_rzs = fmul float %s, %%gb_qs' % RZ)
+        # Rodrigues rotation of (RX,RY,RZs) about the horizontal axis k = (-uy, ux, 0) by th
+        e('%gb_sin = call float @dx.op.unary.f32(i32 13, float %gb_th)')
+        e('%gb_cos = call float @dx.op.unary.f32(i32 12, float %gb_th)')
+        e('%%gb_omc = fsub float %s, %%gb_cos' % c(1.0))
+        e('%%gb_kr0 = fmul float %%gb_ux, %s' % RY)
+        e('%%gb_kr1 = fmul float %%gb_uy, %s' % RX)
+        e('%gb_kdr = fsub float %gb_kr0, %gb_kr1')
+        e('%gb_kdo = fmul float %gb_kdr, %gb_omc')
+        e('%gb_zs = fmul float %gb_rzs, %gb_sin')
+        e('%%gb_nx0 = fmul float %s, %%gb_cos' % RX)
+        e('%gb_nx1 = fmul float %gb_ux, %gb_zs')
+        e('%gb_nx2 = fmul float %gb_uy, %gb_kdo')
+        e('%gb_nx3 = fadd float %gb_nx0, %gb_nx1')
+        e('%gb_nx = fsub float %gb_nx3, %gb_nx2')
+        e('%%gb_ny0 = fmul float %s, %%gb_cos' % RY)
+        e('%gb_ny1 = fmul float %gb_uy, %gb_zs')
+        e('%gb_ny2 = fmul float %gb_ux, %gb_kdo')
+        e('%gb_ny3 = fadd float %gb_ny0, %gb_ny1')
+        e('%gb_ny = fadd float %gb_ny3, %gb_ny2')
+        e('%gb_nz0 = fmul float %gb_rzs, %gb_cos')
+        e('%%gb_nz1 = fmul float %%gb_uy, %s' % RY)
+        e('%%gb_nz2 = fmul float %%gb_ux, %s' % RX)
+        e('%gb_nz3 = fadd float %gb_nz1, %gb_nz2')
+        e('%gb_nz4 = fmul float %gb_nz3, %gb_sin')
+        e('%gb_nz = fsub float %gb_nz0, %gb_nz4')
+        # displacement relative to the original vertex (zero exactly when th = 0 and no squash)
+        e('%%gb_rmx = fsub float %%gb_nx, %s' % RX)
+        e('%%gb_rmy = fsub float %%gb_ny, %s' % RY)
+        e('%%gb_rmz = fsub float %s, %%gb_nz' % RZ)
+        # shear mode: bend by the vertex height above the patch base (tips move, the base stays planted everywhere)
+        e('%%gb_ph0 = call float @dx.op.binary.f32(i32 35, float %s, float %s)' % (RZ, c(0.0)))
+        e('%gb_psh = fmul float %gb_ph0, %gb_sin')
+        e('%gb_pmx = fmul float %gb_ux, %gb_psh')
+        e('%gb_pmy = fmul float %gb_uy, %gb_psh')
+        e('%gb_pmz0 = fmul float %gb_ph0, %gb_omc')
+        e('%%gb_pq = fsub float %s, %%gb_rzs' % RZ)                                       # squash
+        e('%gb_pmz = fadd float %gb_pmz0, %gb_pq')
+        e('%gb_mx = select i1 %gb_part, float %gb_pmx, float %gb_rmx', False)
+        e('%gb_my = select i1 %gb_part, float %gb_pmy, float %gb_rmy', False)
+        e('%gb_mz = select i1 %gb_part, float %gb_pmz, float %gb_rmz', False)
+        return g
+
+    # ---- 4b. per-plant branches (performance) ----
+    # Cheap tests first: the full bend only runs for plants within reach of a character slot, wake trail or attack
+    # source; the procedural wind only for plants inside its fade distance; everything else gets a zero offset.
+    # Both passes run the identical tests on identical inputs, so positions stay bit-identical (prepass/base pass).
+    branch = p.get('branch', True)
+    c = fconst
     pm = re.search(r'!dx\.precise (!\d+)', text)
     prec = (', !dx.precise ' + pm.group(1)) if pm else ''
-    c = fconst
-    g = []
+    blkref = '%0' if blk == 'entry' else blk
+    if branch:
+        q = []
 
-    def e(s, precise=True):
-        g.append('  ' + s + (prec if precise else ''))
-    def cb(name, reg):
-        e('%%%s = call %%dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %%dx.types.Handle %s, i32 %d)' % (name, view_handle, reg), False)
-        for k, comp in enumerate('xyzw'):
-            e('%%%s_%s = extractvalue %%dx.types.CBufRet.f32 %%%s, %d' % (name, comp, name, k), False)
-    # header written by FoliageBend.dll: only bend when it matches exactly
-    cb('gb_hd', VIEW_REG_HEADER)
-    for comp, val in zip('xyzw', MAGIC):
-        e('%%gb_hd_ok%s = fcmp oeq float %%gb_hd_%s, %s' % (comp, comp, c(val)), False)
-    e('%gb_hd_a = and i1 %gb_hd_okx, %gb_hd_oky', False)
-    e('%gb_hd_b = and i1 %gb_hd_okz, %gb_hd_okw', False)
-    e('%gb_valid = and i1 %gb_hd_a, %gb_hd_b', False)
-    # per-material foliage class from the DLL's table: slot = RenderDataPositions[i].w (0 = none), material = meshlet word.y >> 20
-    e('%%gb_pw = extractvalue %%dx.types.CBufRet.f32 %s, 3' % PLOAD, False)
-    e('%gb_slot = bitcast float %gb_pw to i32', False)
-    e('%%gb_mat = lshr i32 %s, 20' % YV, False)
-    e('%gb_hasslot = icmp ne i32 %gb_slot, 0', False)
-    e('%gb_sm1 = add i32 %gb_slot, -1', False)
-    e('%gb_md = lshr i32 %gb_mat, 3', False)
-    e('%gb_d0 = add i32 %gb_sm1, %gb_md', False)
-    e('%%gb_dc = call i32 @dx.op.binary.i32(i32 40, i32 %%gb_d0, i32 %d)' % (CLASS_TABLE_DWORDS - 1), False)   # UMin
-    e('%gb_dr = lshr i32 %gb_dc, 2', False)
-    e('%%gb_tsa = icmp ult i32 %%gb_dr, %d' % CLASS_TABLE_SEG_A_REGS, False)
-    e('%%gb_tbase = select i1 %%gb_tsa, i32 %d, i32 %d' % (VIEW_REG_CLASS_TABLE, VIEW_REG_CLASS_TABLE_B - CLASS_TABLE_SEG_A_REGS), False)
-    e('%gb_treg = add i32 %gb_dr, %gb_tbase', False)
-    e('%%gb_tl = call %%dx.types.CBufRet.i32 @dx.op.cbufferLoadLegacy.i32(i32 59, %%dx.types.Handle %s, i32 %%gb_treg)' % view_handle, False)
-    for k in range(4):
-        e('%%gb_t%d = extractvalue %%dx.types.CBufRet.i32 %%gb_tl, %d' % (k, k), False)
-    e('%gb_dk = and i32 %gb_dc, 3', False)
-    e('%gb_dk1 = icmp eq i32 %gb_dk, 1', False)
-    e('%gb_dk2 = icmp eq i32 %gb_dk, 2', False)
-    e('%gb_dk3 = icmp eq i32 %gb_dk, 3', False)
-    e('%gb_tw1 = select i1 %gb_dk1, i32 %gb_t1, i32 %gb_t0', False)
-    e('%gb_tw2 = select i1 %gb_dk2, i32 %gb_t2, i32 %gb_tw1', False)
-    e('%gb_tw = select i1 %gb_dk3, i32 %gb_t3, i32 %gb_tw2', False)
-    e('%gb_sh0 = and i32 %gb_mat, 7', False)
-    e('%gb_sh = shl i32 %gb_sh0, 2', False)
-    e('%gb_cv = lshr i32 %gb_tw, %gb_sh', False)
-    e('%gb_cls = and i32 %gb_cv, 15', False)
-    e('%gb_gr0 = lshr i32 %gb_cls, 2', False)
-    e('%%gb_gr = add i32 %%gb_gr0, %d' % VIEW_REG_CLASS_GAINS, False)
-    e('%%gb_gl = call %%dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %%dx.types.Handle %s, i32 %%gb_gr)' % view_handle, False)
-    for k in range(4):
-        e('%%gb_g%d = extractvalue %%dx.types.CBufRet.f32 %%gb_gl, %d' % (k, k), False)
-    e('%gb_gk = and i32 %gb_cls, 3', False)
-    e('%gb_gk1 = icmp eq i32 %gb_gk, 1', False)
-    e('%gb_gk2 = icmp eq i32 %gb_gk, 2', False)
-    e('%gb_gk3 = icmp eq i32 %gb_gk, 3', False)
-    e('%gb_gw1 = select i1 %gb_gk1, float %gb_g1, float %gb_g0', False)
-    e('%gb_gw2 = select i1 %gb_gk2, float %gb_g2, float %gb_gw1', False)
-    e('%gb_gws = select i1 %gb_gk3, float %gb_g3, float %gb_gw2', False)
-    e('%%gb_partc = fcmp olt float %%gb_gws, %s' % c(0.0), False)
-    e('%gb_part = and i1 %gb_partc, %gb_hasslot', False)
-    e('%gb_gw = call float @dx.op.unary.f32(i32 6, float %gb_gws)', False)        # |gain|
-    # distances are always measured from the plant pivot (per-vertex distances read as fish-eye); "shear" mode only
-    # changes how the lean is applied: bent from the ground by height instead of rotating the plant about its pivot
-    e('%%gb_refx = fadd float %s, %s' % (OX, c(0.0)))
-    e('%%gb_refy = fadd float %s, %s' % (OY, c(0.0)))
-    cb('gb_pvt', VIEW_REG_PREVIEWTRANSLATION)
-    # Per-plant rigid lean: distance/direction are measured from the plant pivot (OX,OY,OZ), so every vertex of a
-    # plant gets the same rotation (no tearing or stretching). Plants right under a character are squashed instead.
-    acc_x, acc_y, acc_q = c(0.0), c(0.0), c(0.0)
-    for i, reg in enumerate(VIEW_REGS_SLOTS):
-        n = 'gb_s%d' % i
-        cb(n, reg)
-        e('%%%s_tx = fadd float %%%s_x, %%gb_pvt_x' % (n, n))
-        e('%%%s_ty = fadd float %%%s_y, %%gb_pvt_y' % (n, n))
-        e('%%%s_tz = fadd float %%%s_z, %%gb_pvt_z' % (n, n))
-        e('%%%s_vx = fsub float %%gb_refx, %%%s_tx' % (n, n))
-        e('%%%s_vy = fsub float %%gb_refy, %%%s_ty' % (n, n))
-        e('%%%s_vz0 = fsub float %s, %%%s_tz' % (n, OZ, n))
-        e('%%%s_vz = fadd float %%%s_vz0, %s' % (n, n, c(p['foot'])))            # pivot height relative to the feet
-        e('%%%s_vxx = fmul float %%%s_vx, %%%s_vx' % (n, n, n))
-        e('%%%s_vyy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
-        e('%%%s_d2 = fadd float %%%s_vxx, %%%s_vyy' % (n, n, n))
-        e('%%%s_d2c = call float @dx.op.binary.f32(i32 35, float %%%s_d2, float %s)' % (n, n, c(1.0)))
-        e('%%%s_d = call float @dx.op.unary.f32(i32 24, float %%%s_d2c)' % (n, n))
-        e('%%%s_fr = fmul float %%%s_d, %s' % (n, n, c(1.0 / p['radius'])))
-        e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
-        e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
-        e('%%%s_f1 = fmul float %%%s_t, %%%s_t' % (n, n, n))
-        e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
-        e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['vgate'] + 100.0), n))
-        e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
-        e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
-        e('%%%s_wc = call float @dx.op.unary.f32(i32 7, float %%%s_w)' % (n, n))
-        e('%%%s_f2 = fmul float %%%s_f1, %%%s_gz' % (n, n, n))
-        e('%%%s_f = fmul float %%%s_f2, %%%s_wc' % (n, n, n))
-        e('%%%s_k = fdiv float %%%s_f, %%%s_d' % (n, n, n))
-        e('%%%s_mx = fmul float %%%s_vx, %%%s_k' % (n, n, n))
-        e('%%%s_my = fmul float %%%s_vy, %%%s_k' % (n, n, n))
-        e('%%%s_ax = fadd float %s, %%%s_mx' % (n, acc_x, n))
-        e('%%%s_ay = fadd float %s, %%%s_my' % (n, acc_y, n))
-        e('%%%s_tr0 = fmul float %%%s_d, %s' % (n, n, c(1.0 / p['trample_r'])))
-        e('%%%s_tr1 = fsub float %s, %%%s_tr0' % (n, c(1.0), n))
-        e('%%%s_tr = call float @dx.op.unary.f32(i32 7, float %%%s_tr1)' % (n, n))
-        e('%%%s_qf = fmul float %%%s_tr, %%%s_f' % (n, n, n))
-        e('%%%s_aq = fadd float %s, %%%s_qf' % (n, acc_q, n))
-        acc_x, acc_y, acc_q = '%%%s_ax' % n, '%%%s_ay' % n, '%%%s_aq' % n
-    # Wake segments from FoliageBend.dll: A = (x, y, z, strength) newer end, B = (x, y, z, strength) older end.
-    # A plant leans by its distance to the closest point on the segment (strength interpolated along it), outward from
-    # the path and, right on the path, along the direction of travel. The wake only fills what the characters' own bend
-    # leaves (room = 1 - |characters|), so it slows the spring-back without adding to the initial push.
-    e('%%gb_cxx = fmul float %s, %s' % (acc_x, acc_x))
-    e('%%gb_cyy = fmul float %s, %s' % (acc_y, acc_y))
-    e('%gb_cl2 = fadd float %gb_cxx, %gb_cyy')
-    e('%gb_cl = call float @dx.op.unary.f32(i32 24, float %gb_cl2)')
-    wx, wy, wm = c(0.0), c(0.0), c(0.0)
-    for j, (ra, rb) in enumerate(VIEW_REGS_WAKE):
-        n = 'gb_w%d' % j
-        cb(n + 'a', ra)
-        cb(n + 'b', rb)
-        e('%%%s_ax = fadd float %%%sa_x, %%gb_pvt_x' % (n, n))
-        e('%%%s_ay = fadd float %%%sa_y, %%gb_pvt_y' % (n, n))
-        e('%%%s_az = fadd float %%%sa_z, %%gb_pvt_z' % (n, n))
-        e('%%%s_ex = fsub float %%%sb_x, %%%sa_x' % (n, n, n))
-        e('%%%s_ey = fsub float %%%sb_y, %%%sa_y' % (n, n, n))
-        e('%%%s_ez = fsub float %%%sb_z, %%%sa_z' % (n, n, n))
-        e('%%%s_vx = fsub float %%gb_refx, %%%s_ax' % (n, n))
-        e('%%%s_vy = fsub float %%gb_refy, %%%s_ay' % (n, n))
-        e('%%%s_exx = fmul float %%%s_ex, %%%s_ex' % (n, n, n))
-        e('%%%s_eyy = fmul float %%%s_ey, %%%s_ey' % (n, n, n))
-        e('%%%s_ee0 = fadd float %%%s_exx, %%%s_eyy' % (n, n, n))
-        e('%%%s_ee = call float @dx.op.binary.f32(i32 35, float %%%s_ee0, float %s)' % (n, n, c(1.0)))
-        e('%%%s_dp0 = fmul float %%%s_vx, %%%s_ex' % (n, n, n))
-        e('%%%s_dp1 = fmul float %%%s_vy, %%%s_ey' % (n, n, n))
-        e('%%%s_dp = fadd float %%%s_dp0, %%%s_dp1' % (n, n, n))
-        e('%%%s_t0 = fdiv float %%%s_dp, %%%s_ee' % (n, n, n))
-        e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_t0)' % (n, n))
-        e('%%%s_qx0 = fmul float %%%s_ex, %%%s_t' % (n, n, n))
-        e('%%%s_qy0 = fmul float %%%s_ey, %%%s_t' % (n, n, n))
-        e('%%%s_qz0 = fmul float %%%s_ez, %%%s_t' % (n, n, n))
-        e('%%%s_ox = fsub float %%%s_vx, %%%s_qx0' % (n, n, n))           # plant - closest point (horizontal)
-        e('%%%s_oy = fsub float %%%s_vy, %%%s_qy0' % (n, n, n))
-        e('%%%s_qz = fadd float %%%s_az, %%%s_qz0' % (n, n, n))
-        e('%%%s_oxx = fmul float %%%s_ox, %%%s_ox' % (n, n, n))
-        e('%%%s_oyy = fmul float %%%s_oy, %%%s_oy' % (n, n, n))
-        e('%%%s_od20 = fadd float %%%s_oxx, %%%s_oyy' % (n, n, n))
-        e('%%%s_od2 = call float @dx.op.binary.f32(i32 35, float %%%s_od20, float %s)' % (n, n, c(1.0)))
-        e('%%%s_od = call float @dx.op.unary.f32(i32 24, float %%%s_od2)' % (n, n))
-        e('%%%s_sd = fsub float %%%sb_w, %%%sa_w' % (n, n, n))
-        e('%%%s_st0 = fmul float %%%s_sd, %%%s_t' % (n, n, n))
-        e('%%%s_s = fadd float %%%sa_w, %%%s_st0' % (n, n, n))
-        e('%%%s_fr = fmul float %%%s_od, %s' % (n, n, c(1.0 / p['radius'])))
-        e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
-        e('%%%s_fs = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
-        e('%%%s_ff = fmul float %%%s_fs, %%%s_fs' % (n, n, n))
-        e('%%%s_vz0 = fsub float %s, %%%s_qz' % (n, OZ, n))
-        e('%%%s_vz = fadd float %%%s_vz0, %s' % (n, n, c(p['foot'])))
-        e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
-        e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['vgate'] + 100.0), n))
-        e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
-        e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
-        e('%%%s_m0 = fmul float %%%s_ff, %%%s_gz' % (n, n, n))
-        e('%%%s_sc = call float @dx.op.unary.f32(i32 7, float %%%s_s)' % (n, n))
-        e('%%%s_m = fmul float %%%s_m0, %%%s_sc' % (n, n, n))
-        # direction: outward from the path, blending into the travel direction (A - B) on the path itself
-        e('%%%s_side0 = fmul float %%%s_od, %s' % (n, n, c(1.0 / 40.0)))
-        e('%%%s_side = call float @dx.op.unary.f32(i32 7, float %%%s_side0)' % (n, n))
-        e('%%%s_el = call float @dx.op.unary.f32(i32 24, float %%%s_ee)' % (n, n))
-        e('%%%s_on = fsub float %s, %%%s_side' % (n, c(1.0), n))
-        e('%%%s_tk = fdiv float %%%s_on, %%%s_el' % (n, n, n))           # on the path: lean back, as the character left it
-        e('%%%s_sk = fdiv float %%%s_side, %%%s_od' % (n, n, n))
-        e('%%%s_dx0 = fmul float %%%s_ox, %%%s_sk' % (n, n, n))
-        e('%%%s_dx1 = fmul float %%%s_ex, %%%s_tk' % (n, n, n))
-        e('%%%s_dx = fadd float %%%s_dx0, %%%s_dx1' % (n, n, n))
-        e('%%%s_dy0 = fmul float %%%s_oy, %%%s_sk' % (n, n, n))
-        e('%%%s_dy1 = fmul float %%%s_ey, %%%s_tk' % (n, n, n))
-        e('%%%s_dy = fadd float %%%s_dy0, %%%s_dy1' % (n, n, n))
-        e('%%%s_dxx = fmul float %%%s_dx, %%%s_dx' % (n, n, n))
-        e('%%%s_dyy = fmul float %%%s_dy, %%%s_dy' % (n, n, n))
-        e('%%%s_dl20 = fadd float %%%s_dxx, %%%s_dyy' % (n, n, n))
-        e('%%%s_dl2 = call float @dx.op.binary.f32(i32 35, float %%%s_dl20, float %s)' % (n, n, c(1e-8)))
-        e('%%%s_dl = call float @dx.op.unary.f32(i32 24, float %%%s_dl2)' % (n, n))
-        e('%%%s_mk = fdiv float %%%s_m, %%%s_dl' % (n, n, n))
-        e('%%%s_mx = fmul float %%%s_dx, %%%s_mk' % (n, n, n))
-        e('%%%s_my = fmul float %%%s_dy, %%%s_mk' % (n, n, n))
-        # strongest segment wins (summing made plants near a segment joint tilt a second time)
-        e('%%%s_gt = fcmp ogt float %%%s_m, %s' % (n, n, wm), False)
-        e('%%%s_wx = select i1 %%%s_gt, float %%%s_mx, float %s' % (n, n, n, wx), False)
-        e('%%%s_wy = select i1 %%%s_gt, float %%%s_my, float %s' % (n, n, n, wy), False)
-        e('%%%s_wm = select i1 %%%s_gt, float %%%s_m, float %s' % (n, n, n, wm), False)
-        wx, wy, wm = '%%%s_wx' % n, '%%%s_wy' % n, '%%%s_wm' % n
-    # max-combine: add only the part of the wake that exceeds the characters' own bend (no second push, no extra
-    # bend around a character standing still); the wake takes over continuously as a character walks away
-    e('%%gb_wxx = fmul float %s, %s' % (wx, wx))
-    e('%%gb_wyy = fmul float %s, %s' % (wy, wy))
-    e('%gb_wl20 = fadd float %gb_wxx, %gb_wyy')
-    e('%%gb_wl2 = call float @dx.op.binary.f32(i32 35, float %%gb_wl20, float %s)' % c(1e-8))
-    e('%gb_wl = call float @dx.op.unary.f32(i32 24, float %gb_wl2)')
-    e('%gb_wex0 = fsub float %gb_wl, %gb_cl')
-    e('%%gb_wex = call float @dx.op.binary.f32(i32 35, float %%gb_wex0, float %s)' % c(0.0))
-    e('%gb_wsc = fdiv float %gb_wex, %gb_wl')
-    e('%%gb_wkx = fmul float %s, %%gb_wsc' % wx)
-    e('%%gb_wky = fmul float %s, %%gb_wsc' % wy)
-    e('%%gb_cwx = fadd float %s, %%gb_wkx' % acc_x)
-    e('%%gb_cwy = fadd float %s, %%gb_wky' % acc_y)
-    acc_x, acc_y = '%gb_cwx', '%gb_cwy'
-    # Attack sources from FoliageBend.dll (weapon swing gusts; later shockwaves):
-    #   A = (x, y, z world, radius)   B = (dirx, diry, strength, ring)
-    # dir == 0 -> radial push away from the source; otherwise push along dir. Empty slots have radius 0 -> no effect.
-    for j, (ra, rb) in enumerate(VIEW_REGS_ATTACK):
-        n = 'gb_a%d' % j
-        cb(n + 'p', ra)
-        cb(n + 'q', rb)
-        e('%%%s_tx = fadd float %%%sp_x, %%gb_pvt_x' % (n, n))
-        e('%%%s_ty = fadd float %%%sp_y, %%gb_pvt_y' % (n, n))
-        e('%%%s_tz = fadd float %%%sp_z, %%gb_pvt_z' % (n, n))
-        e('%%%s_vx = fsub float %%gb_refx, %%%s_tx' % (n, n))
-        e('%%%s_vy = fsub float %%gb_refy, %%%s_ty' % (n, n))
-        e('%%%s_vz = fsub float %s, %%%s_tz' % (n, OZ, n))
-        e('%%%s_vxx = fmul float %%%s_vx, %%%s_vx' % (n, n, n))
-        e('%%%s_vyy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
-        e('%%%s_d2 = fadd float %%%s_vxx, %%%s_vyy' % (n, n, n))
-        e('%%%s_d2c = call float @dx.op.binary.f32(i32 35, float %%%s_d2, float %s)' % (n, n, c(1.0)))
-        e('%%%s_d = call float @dx.op.unary.f32(i32 24, float %%%s_d2c)' % (n, n))
-        e('%%%s_rc = call float @dx.op.binary.f32(i32 35, float %%%sp_w, float %s)' % (n, n, c(1e-3)))
-        e('%%%s_fr = fdiv float %%%s_d, %%%s_rc' % (n, n, n))
-        e('%%%s_f0 = fsub float %s, %%%s_fr' % (n, c(1.0), n))
-        e('%%%s_t = call float @dx.op.unary.f32(i32 7, float %%%s_f0)' % (n, n))
-        e('%%%s_tt = fmul float %%%s_t, %%%s_t' % (n, n, n))
-        e('%%%s_adz = call float @dx.op.unary.f32(i32 6, float %%%s_vz)' % (n, n))
-        e('%%%s_gz0 = fsub float %s, %%%s_adz' % (n, c(p['attack_vgate'] + 100.0), n))
-        e('%%%s_gz1 = fmul float %%%s_gz0, %s' % (n, n, c(0.01)))
-        e('%%%s_gz = call float @dx.op.unary.f32(i32 7, float %%%s_gz1)' % (n, n))
-        e('%%%s_s = call float @dx.op.unary.f32(i32 7, float %%%sq_z)' % (n, n))
-        e('%%%s_f1 = fmul float %%%s_tt, %%%s_gz' % (n, n, n))
-        e('%%%s_f2 = fmul float %%%s_f1, %%%s_s' % (n, n, n))
-        e('%%%s_f = fmul float %%%s_f2, %s' % (n, n, c(p['attack_gain'])))
-        e('%%%s_rx = fdiv float %%%s_vx, %%%s_d' % (n, n, n))
-        e('%%%s_ry = fdiv float %%%s_vy, %%%s_d' % (n, n, n))
-        e('%%%s_zx = fcmp oeq float %%%sq_x, %s' % (n, n, c(0.0)), False)
-        e('%%%s_zy = fcmp oeq float %%%sq_y, %s' % (n, n, c(0.0)), False)
-        e('%%%s_rad = and i1 %%%s_zx, %%%s_zy' % (n, n, n), False)
-        e('%%%s_ux = select i1 %%%s_rad, float %%%s_rx, float %%%sq_x' % (n, n, n, n), False)
-        e('%%%s_uy = select i1 %%%s_rad, float %%%s_ry, float %%%sq_y' % (n, n, n, n), False)
-        e('%%%s_mx = fmul float %%%s_ux, %%%s_f' % (n, n, n))
-        e('%%%s_my = fmul float %%%s_uy, %%%s_f' % (n, n, n))
-        e('%%%s_ax = fadd float %s, %%%s_mx' % (n, acc_x, n))
-        e('%%%s_ay = fadd float %s, %%%s_my' % (n, acc_y, n))
-        acc_x, acc_y = '%%%s_ax' % n, '%%%s_ay' % n
-    if H is None:
-        # Procedural wind for plants without baked sway (gated later by the material class gain, like the bend):
-        # lean = dir * strength * gust(t, phase) + small cross-wind flutter; phase from the plant's WORLD position so
-        # neighbours move slightly out of step; fades out with camera distance (pivot is camera-relative).
-        cb('gb_wd_wnd', VIEW_REG_WIND)
-        cb('gb_wd_wnd2', VIEW_REG_WIND2)
-        cb('gb_wd_tm', VIEW_REG_GAMETIME)
-        e('%gb_wd_wpx = fsub float ' + OX + ', %gb_pvt_x')
-        e('%gb_wd_wpy = fsub float ' + OY + ', %gb_pvt_y')
-        e('%%gb_wd_ph0 = fmul float %%gb_wd_wpx, %s' % c(0.0031))
-        e('%%gb_wd_ph1 = fmul float %%gb_wd_wpy, %s' % c(0.0043))
-        e('%gb_wd_ph = fadd float %gb_wd_ph0, %gb_wd_ph1')
-        e('%gb_wd_ts = fmul float %gb_wd_tm_z, %gb_wd_wnd_w')
-        e('%%gb_wd_a1 = fmul float %%gb_wd_ts, %s' % c(1.7))
-        e('%gb_wd_a1p = fadd float %gb_wd_a1, %gb_wd_ph')
-        e('%gb_wd_s1 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a1p)')
-        e('%%gb_wd_a2 = fmul float %%gb_wd_ts, %s' % c(0.43))
-        e('%%gb_wd_ph2 = fmul float %%gb_wd_ph, %s' % c(0.37))
-        e('%gb_wd_a2p = fadd float %gb_wd_a2, %gb_wd_ph2')
-        e('%gb_wd_s2 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a2p)')
-        e('%%gb_wd_a3 = fmul float %%gb_wd_ts, %s' % c(3.1))
-        e('%%gb_wd_ph3 = fmul float %%gb_wd_ph, %s' % c(1.9))
-        e('%gb_wd_a3p = fadd float %gb_wd_a3, %gb_wd_ph3')
-        e('%gb_wd_s3 = call float @dx.op.unary.f32(i32 13, float %gb_wd_a3p)')
-        # gust = (0.55 + 0.45 sin1) * (0.65 + 0.35 sin2) in [0.065, 1]
-        e('%%gb_wd_g10 = fmul float %%gb_wd_s1, %s' % c(0.45))
-        e('%%gb_wd_g1 = fadd float %%gb_wd_g10, %s' % c(0.55))
-        e('%%gb_wd_g20 = fmul float %%gb_wd_s2, %s' % c(0.35))
-        e('%%gb_wd_g2 = fadd float %%gb_wd_g20, %s' % c(0.65))
-        e('%gb_wd_gu = fmul float %gb_wd_g1, %gb_wd_g2')
-        # distance fade
-        e('%gb_wd_cxx2 = fmul float ' + OX + ', ' + OX)
-        e('%gb_wd_cyy2 = fmul float ' + OY + ', ' + OY)
-        e('%gb_wd_czz2 = fmul float ' + OZ + ', ' + OZ)
-        e('%gb_wd_cd20 = fadd float %gb_wd_cxx2, %gb_wd_cyy2')
-        e('%gb_wd_cd2 = fadd float %gb_wd_cd20, %gb_wd_czz2')
-        e('%gb_wd_cdist = call float @dx.op.unary.f32(i32 24, float %gb_wd_cd2)')
-        e('%gb_wd_fd0 = fsub float %gb_wd_cdist, %gb_wd_wnd2_x')
-        e('%gb_wd_fd1 = fmul float %gb_wd_fd0, %gb_wd_wnd2_y')
-        e('%%gb_wd_fd2 = fsub float %s, %%gb_wd_fd1' % c(1.0))
-        e('%gb_wd_fade = call float @dx.op.unary.f32(i32 7, float %gb_wd_fd2)')
-        e('%gb_wd_wamp0 = fmul float %gb_wd_wnd_z, %gb_wd_fade')
-        e('%gb_wd_wl = fmul float %gb_wd_wamp0, %gb_wd_gu')
-        e('%%gb_wd_wf0 = fmul float %%gb_wd_wamp0, %s' % c(0.2))
-        e('%gb_wd_wf = fmul float %gb_wd_wf0, %gb_wd_s3')          # cross-wind flutter
-        e('%gb_wd_wx0 = fmul float %gb_wd_wnd_x, %gb_wd_wl')
-        e('%gb_wd_wx1 = fmul float %gb_wd_wnd_y, %gb_wd_wf')
-        e('%gb_wd_wvx = fsub float %gb_wd_wx0, %gb_wd_wx1')
-        e('%gb_wd_wy0 = fmul float %gb_wd_wnd_y, %gb_wd_wl')
-        e('%gb_wd_wy1 = fmul float %gb_wd_wnd_x, %gb_wd_wf')
-        e('%gb_wd_wvy = fadd float %gb_wd_wy0, %gb_wd_wy1')
-        e('%%gb_awx = fadd float %s, %%gb_wd_wvx' % acc_x)
-        e('%%gb_awy = fadd float %s, %%gb_wd_wvy' % acc_y)
-        acc_x, acc_y = '%gb_awx', '%gb_awy'
-    e('%%gb_axx = fmul float %s, %s' % (acc_x, acc_x))
-    e('%%gb_ayy = fmul float %s, %s' % (acc_y, acc_y))
-    e('%gb_al2 = fadd float %gb_axx, %gb_ayy')
-    e('%%gb_al2c = call float @dx.op.binary.f32(i32 35, float %%gb_al2, float %s)' % c(1e-8))
-    e('%gb_al = call float @dx.op.unary.f32(i32 24, float %gb_al2c)')
-    e('%%gb_alc = call float @dx.op.binary.f32(i32 36, float %%gb_al, float %s)' % c(1.0))   # fmin
-    e('%gb_inv = fdiv float 1.000000e+00, %gb_al')
-    e('%%gb_ux = fmul float %s, %%gb_inv' % acc_x)
-    e('%%gb_uy = fmul float %s, %%gb_inv' % acc_y)
-    # gates: plant size (record +108), plant has baked sway, DLL header valid
-    if H is None:
-        # no-sway permutation (no plant record): bend only materials the DLL classified as foliage
-        e('%%gb_cg = select i1 %%gb_hasslot, float %%gb_gw, float %s' % c(0.0), False)
-        e('%%gb_gs = select i1 %%gb_valid, float %%gb_cg, float %s' % c(0.0), False)
+        def qe(s):
+            q.append('  ' + s)
+
+        def qcb(name, reg):
+            qe('%%%s = call %%dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %%dx.types.Handle %s, i32 %d)' % (name, view_handle, reg))
+            for k, comp in enumerate('xyzw'):
+                qe('%%%s_%s = extractvalue %%dx.types.CBufRet.f32 %%%s, %d' % (name, comp, name, k))
+        qcb('gq_hd', VIEW_REG_HEADER)
+        for comp, val in zip('xyzw', MAGIC):
+            qe('%%gq_hd_ok%s = fcmp oeq float %%gq_hd_%s, %s' % (comp, comp, c(val)))
+        qe('%gq_hd_a = and i1 %gq_hd_okx, %gq_hd_oky')
+        qe('%gq_hd_b = and i1 %gq_hd_okz, %gq_hd_okw')
+        qe('%gq_valid = and i1 %gq_hd_a, %gq_hd_b')
+        qcb('gq_pvt', VIEW_REG_PREVIEWTRANSLATION)
+        near = []
+        r2 = c((p['radius'] + 1.0) ** 2)
+        for i, reg in enumerate(VIEW_REGS_SLOTS):          # characters: inside the bend radius, with weight
+            n = 'gq_s%d' % i
+            qcb(n, reg)
+            qe('%%%s_vx0 = fadd float %%%s_x, %%gq_pvt_x' % (n, n)); qe('%%%s_vx = fsub float %s, %%%s_vx0' % (n, OX, n))
+            qe('%%%s_vy0 = fadd float %%%s_y, %%gq_pvt_y' % (n, n)); qe('%%%s_vy = fsub float %s, %%%s_vy0' % (n, OY, n))
+            qe('%%%s_xx = fmul float %%%s_vx, %%%s_vx' % (n, n, n)); qe('%%%s_yy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
+            qe('%%%s_d2 = fadd float %%%s_xx, %%%s_yy' % (n, n, n))
+            qe('%%%s_in = fcmp olt float %%%s_d2, %s' % (n, n, r2))
+            qe('%%%s_on = fcmp ogt float %%%s_w, %s' % (n, n, c(0.0)))
+            qe('%%%s_n = and i1 %%%s_in, %%%s_on' % (n, n, n)); near.append('%%%s_n' % n)
+        for j, (ra, rb) in enumerate(VIEW_REGS_WAKE):      # wake trails: within radius + segment length of the newer end
+            n = 'gq_w%d' % j
+            qcb(n + 'a', ra); qcb(n + 'b', rb)
+            qe('%%%s_ex = fsub float %%%sb_x, %%%sa_x' % (n, n, n)); qe('%%%s_ey = fsub float %%%sb_y, %%%sa_y' % (n, n, n))
+            qe('%%%s_exx = fmul float %%%s_ex, %%%s_ex' % (n, n, n)); qe('%%%s_eyy = fmul float %%%s_ey, %%%s_ey' % (n, n, n))
+            qe('%%%s_ee = fadd float %%%s_exx, %%%s_eyy' % (n, n, n))
+            qe('%%%s_el = call float @dx.op.unary.f32(i32 24, float %%%s_ee)' % (n, n))
+            qe('%%%s_rr = fadd float %%%s_el, %s' % (n, n, c(p['radius'] + 1.0)))
+            qe('%%%s_rr2 = fmul float %%%s_rr, %%%s_rr' % (n, n, n))
+            qe('%%%s_vx0 = fadd float %%%sa_x, %%gq_pvt_x' % (n, n)); qe('%%%s_vx = fsub float %s, %%%s_vx0' % (n, OX, n))
+            qe('%%%s_vy0 = fadd float %%%sa_y, %%gq_pvt_y' % (n, n)); qe('%%%s_vy = fsub float %s, %%%s_vy0' % (n, OY, n))
+            qe('%%%s_xx = fmul float %%%s_vx, %%%s_vx' % (n, n, n)); qe('%%%s_yy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
+            qe('%%%s_d2 = fadd float %%%s_xx, %%%s_yy' % (n, n, n))
+            qe('%%%s_in = fcmp olt float %%%s_d2, %%%s_rr2' % (n, n, n))
+            qe('%%%s_sa = fcmp ogt float %%%sa_w, %s' % (n, n, c(0.0))); qe('%%%s_sb = fcmp ogt float %%%sb_w, %s' % (n, n, c(0.0)))
+            qe('%%%s_s = or i1 %%%s_sa, %%%s_sb' % (n, n, n))
+            qe('%%%s_n = and i1 %%%s_in, %%%s_s' % (n, n, n)); near.append('%%%s_n' % n)
+        for j, (ra, rb) in enumerate(VIEW_REGS_ATTACK):    # attack sources: inside their radius, with strength
+            n = 'gq_a%d' % j
+            qcb(n + 'p', ra); qcb(n + 'q', rb)
+            qe('%%%s_vx0 = fadd float %%%sp_x, %%gq_pvt_x' % (n, n)); qe('%%%s_vx = fsub float %s, %%%s_vx0' % (n, OX, n))
+            qe('%%%s_vy0 = fadd float %%%sp_y, %%gq_pvt_y' % (n, n)); qe('%%%s_vy = fsub float %s, %%%s_vy0' % (n, OY, n))
+            qe('%%%s_xx = fmul float %%%s_vx, %%%s_vx' % (n, n, n)); qe('%%%s_yy = fmul float %%%s_vy, %%%s_vy' % (n, n, n))
+            qe('%%%s_d2 = fadd float %%%s_xx, %%%s_yy' % (n, n, n))
+            qe('%%%s_rp = fadd float %%%sp_w, %s' % (n, n, c(1.0)))
+            qe('%%%s_r2 = fmul float %%%s_rp, %%%s_rp' % (n, n, n))
+            qe('%%%s_in = fcmp olt float %%%s_d2, %%%s_r2' % (n, n, n))
+            qe('%%%s_ok = fcmp ogt float %%%sp_w, %s' % (n, n, c(0.0)))
+            qe('%%%s_on = fcmp ogt float %%%sq_z, %s' % (n, n, c(0.0)))
+            qe('%%%s_n0 = and i1 %%%s_in, %%%s_on' % (n, n, n))
+            qe('%%%s_n = and i1 %%%s_n0, %%%s_ok' % (n, n, n)); near.append('%%%s_n' % n)
+        acc = near[0]
+        for k, v in enumerate(near[1:]):
+            qe('%%gq_or%d = or i1 %s, %s' % (k, acc, v)); acc = '%%gq_or%d' % k
+        qe('%%gq_full = and i1 %%gq_valid, %s' % acc)
+        if H is None:                                       # procedural wind: inside the fade-out distance, strength > 0
+            qcb('gq_wnd', VIEW_REG_WIND); qcb('gq_wnd2', VIEW_REG_WIND2)
+            qe('%%gq_cx = fmul float %s, %s' % (OX, OX)); qe('%%gq_cy = fmul float %s, %s' % (OY, OY))
+            qe('%%gq_cz = fmul float %s, %s' % (OZ, OZ))
+            qe('%gq_c2a = fadd float %gq_cx, %gq_cy'); qe('%gq_c2 = fadd float %gq_c2a, %gq_cz')
+            qe('%gq_cd = call float @dx.op.unary.f32(i32 24, float %gq_c2)')
+            qe('%gq_fd0 = fsub float %gq_cd, %gq_wnd2_x'); qe('%gq_fd1 = fmul float %gq_fd0, %gq_wnd2_y')
+            qe('%%gq_fin = fcmp olt float %%gq_fd1, %s' % c(1.0))
+            qe('%%gq_won = fcmp ogt float %%gq_wnd_z, %s' % c(0.0))
+            qe('%gq_w0 = and i1 %gq_fin, %gq_won'); qe('%gq_wind = and i1 %gq_w0, %gq_valid')
+        full = gen(True, True)
+        ren = lambda lines, pre: [re.sub(r'%gb_', '%' + pre + '_', l) for l in lines]
+        g = q + ['  br i1 %gq_full, label %gq_bfull, label %gq_balt', '', 'gq_balt:']
+        if H is None:
+            wind = ren(gen(False, True), 'gw')
+            g += ['  br i1 %gq_wind, label %gq_bwind, label %gq_join', '', 'gq_bfull:'] + full + ['  br label %gq_join', '',
+                  'gq_bwind:'] + wind + ['  br label %gq_join', '', 'gq_join:']
+            for a in ('mx', 'my', 'mz'):
+                g.append('  %%gq_%s = phi float [ %%gb_%s, %%gq_bfull ], [ %%gw_%s, %%gq_bwind ], [ %s, %%gq_balt ]' % (a, a, a, c(0.0)))
+        else:
+            g += ['  br label %gq_join', '', 'gq_bfull:'] + full + ['  br label %gq_join', '', 'gq_join:']
+            for a in ('mx', 'my', 'mz'):
+                g.append('  %%gq_%s = phi float [ %%gb_%s, %%gq_bfull ], [ %s, %%gq_balt ]' % (a, a, c(0.0)))
+        off = '%gq_'
     else:
-        e('%%gb_rr = call %%dx.types.ResRet.f32 @dx.op.rawBufferLoad.f32(i32 139, %%dx.types.Handle %s, i32 %s, i32 %d, i8 1, i32 4)' % (H, IDX, PRIM_SPHERE_RADIUS), False)
-        e('%gb_rad = extractvalue %dx.types.ResRet.f32 %gb_rr, 0', False)
-        e('%%gb_gs0 = fsub float %s, %%gb_rad' % c(p['size_none']))
-        e('%%gb_gs1 = fmul float %%gb_gs0, %s' % c(1.0 / (p['size_none'] - p['size_full'])))
-        e('%gb_gs2 = call float @dx.op.unary.f32(i32 7, float %gb_gs1)')
-        e('%%gb_nkr = call %%dx.types.ResRet.i32 @dx.op.rawBufferLoad.i32(i32 139, %%dx.types.Handle %s, i32 %s, i32 %d, i8 1, i32 4)' % (H, IDX, PRIM_NUMDEFORMKEYS), False)
-        e('%gb_nk = extractvalue %dx.types.ResRet.i32 %gb_nkr, 0', False)
-        e('%gb_has = icmp ne i32 %gb_nk, 0', False)
-        e('%gb_on = and i1 %gb_has, %gb_valid' if not p.get('test_all') else '%gb_on = and i1 %gb_valid, %gb_valid', False)
-        e('%%gb_gsr = select i1 %%gb_on, float %%gb_gs2, float %s' % c(0.0), False)
-        e('%%gb_cg = select i1 %%gb_hasslot, float %%gb_gw, float %s' % c(1.0), False)
-        e('%gb_gs = fmul float %gb_gsr, %gb_cg')
-    # lean angle and trample squash
-    e('%%gb_th0 = fmul float %%gb_alc, %s' % c(p['max_angle']))
-    e('%gb_th = fmul float %gb_th0, %gb_gs')
-    e('%%gb_q0 = call float @dx.op.binary.f32(i32 36, float %s, float %s)' % (acc_q, c(1.0)))
-    e('%%gb_q1 = fmul float %%gb_q0, %s' % c(p['squash']))
-    e('%gb_q = fmul float %gb_q1, %gb_gs')
-    e('%%gb_qs = fsub float %s, %%gb_q' % c(1.0))
-    e('%%gb_rzs = fmul float %s, %%gb_qs' % RZ)
-    # Rodrigues rotation of (RX,RY,RZs) about the horizontal axis k = (-uy, ux, 0) by th
-    e('%gb_sin = call float @dx.op.unary.f32(i32 13, float %gb_th)')
-    e('%gb_cos = call float @dx.op.unary.f32(i32 12, float %gb_th)')
-    e('%%gb_omc = fsub float %s, %%gb_cos' % c(1.0))
-    e('%%gb_kr0 = fmul float %%gb_ux, %s' % RY)
-    e('%%gb_kr1 = fmul float %%gb_uy, %s' % RX)
-    e('%gb_kdr = fsub float %gb_kr0, %gb_kr1')
-    e('%gb_kdo = fmul float %gb_kdr, %gb_omc')
-    e('%gb_zs = fmul float %gb_rzs, %gb_sin')
-    e('%%gb_nx0 = fmul float %s, %%gb_cos' % RX)
-    e('%gb_nx1 = fmul float %gb_ux, %gb_zs')
-    e('%gb_nx2 = fmul float %gb_uy, %gb_kdo')
-    e('%gb_nx3 = fadd float %gb_nx0, %gb_nx1')
-    e('%gb_nx = fsub float %gb_nx3, %gb_nx2')
-    e('%%gb_ny0 = fmul float %s, %%gb_cos' % RY)
-    e('%gb_ny1 = fmul float %gb_uy, %gb_zs')
-    e('%gb_ny2 = fmul float %gb_ux, %gb_kdo')
-    e('%gb_ny3 = fadd float %gb_ny0, %gb_ny1')
-    e('%gb_ny = fadd float %gb_ny3, %gb_ny2')
-    e('%gb_nz0 = fmul float %gb_rzs, %gb_cos')
-    e('%%gb_nz1 = fmul float %%gb_uy, %s' % RY)
-    e('%%gb_nz2 = fmul float %%gb_ux, %s' % RX)
-    e('%gb_nz3 = fadd float %gb_nz1, %gb_nz2')
-    e('%gb_nz4 = fmul float %gb_nz3, %gb_sin')
-    e('%gb_nz = fsub float %gb_nz0, %gb_nz4')
-    # displacement relative to the original vertex (zero exactly when th = 0 and no squash)
-    e('%%gb_rmx = fsub float %%gb_nx, %s' % RX)
-    e('%%gb_rmy = fsub float %%gb_ny, %s' % RY)
-    e('%%gb_rmz = fsub float %s, %%gb_nz' % RZ)
-    # shear mode: bend by the vertex height above the patch base (tips move, the base stays planted everywhere)
-    e('%%gb_ph0 = call float @dx.op.binary.f32(i32 35, float %s, float %s)' % (RZ, c(0.0)))
-    e('%gb_psh = fmul float %gb_ph0, %gb_sin')
-    e('%gb_pmx = fmul float %gb_ux, %gb_psh')
-    e('%gb_pmy = fmul float %gb_uy, %gb_psh')
-    e('%gb_pmz0 = fmul float %gb_ph0, %gb_omc')
-    e('%%gb_pq = fsub float %s, %%gb_rzs' % RZ)                                       # squash
-    e('%gb_pmz = fadd float %gb_pmz0, %gb_pq')
-    e('%gb_mx = select i1 %gb_part, float %gb_pmx, float %gb_rmx', False)
-    e('%gb_my = select i1 %gb_part, float %gb_pmy, float %gb_rmy', False)
-    e('%gb_mz = select i1 %gb_part, float %gb_pmz, float %gb_rmz', False)
-    e('%%gb_X = fadd float %s, %%gb_mx' % X)
-    e('%%gb_Y = fadd float %s, %%gb_my' % Y)
-    e('%%gb_Z = fsub float %s, %%gb_mz' % Z)
+        g = gen(True, True)
+        off = '%gb_'
+    g.append('  %%gb_X = fadd float %s, %smx%s' % (X, off, prec))
+    g.append('  %%gb_Y = fadd float %s, %smy%s' % (Y, off, prec))
+    g.append('  %%gb_Z = fsub float %s, %smz%s' % (Z, off, prec))
     L, n_cur = insert_and_rewire(ir.L, ir.fend, ins, g, {X: '%gb_X', Y: '%gb_Y', Z: '%gb_Z'})
+    if branch:   # the block's terminator now ends gq_join: successors' phis must name it as their predecessor
+        for k in range(ins + len(g), len(L)):
+            if ' = phi ' in L[k]:
+                L[k] = re.sub(r'(\[ [^,\]]+, )' + re.escape(blkref) + r'( \])', r'\1%gq_join\2', L[k])
     if n_cur < 3:
         raise PatchError('too few uses rewired (%d)' % n_cur)
     txt = '\n'.join(L)
@@ -651,11 +761,12 @@ def patch_ir(text, params=None):
             pb = {ir2.defs[x][1] for x in (PX, PY, PZ)}
             pins = max(ir2.defs[x][0] for x in (PX, PY, PZ)) + 1
             pblk = ir2.defs[PX][1]
-            if len(pb) != 1 or not all(ir2.available(v, pins, pblk) for v in ('%gb_mx', '%gb_my', '%gb_mz')):
+            OFF = ('%gq_' if p.get('branch', True) else '%gb_')
+            if len(pb) != 1 or not all(ir2.available(v, pins, pblk) for v in (OFF + 'mx', OFF + 'my', OFF + 'mz')):
                 raise PatchError('bend offset not available at previous-position site')
-            g2 = ['  %%gb_PX = fadd float %s, %%gb_mx%s' % (PX, prec),
-                  '  %%gb_PY = fadd float %s, %%gb_my%s' % (PY, prec),
-                  '  %%gb_PZ = fsub float %s, %%gb_mz%s' % (PZ, prec)]
+            g2 = ['  %%gb_PX = fadd float %s, %smx%s' % (PX, OFF, prec),
+                  '  %%gb_PY = fadd float %s, %smy%s' % (PY, OFF, prec),
+                  '  %%gb_PZ = fsub float %s, %smz%s' % (PZ, OFF, prec)]
             L2, n_prev = insert_and_rewire(ir2.L, ir2.fend, pins, g2, {PX: '%gb_PX', PY: '%gb_PY', PZ: '%gb_PZ'})
             if n_prev < 3:
                 raise PatchError('too few previous-position uses rewired (%d)' % n_prev)

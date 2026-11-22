@@ -30,8 +30,7 @@ for i in range(len(A.entries)):
     dx = os.path.join(OUT, '%05d.dxil' % i)
     open(dx, 'wb').write(code[j:j + size])
     ll = os.path.join(OUT, 'll', '%05d.ll' % i)
-    r = subprocess.run([DXC, '-dumpbin', dx, '-Fo', ll], capture_output=True, text=True)
-    if r.returncode != 0 or not os.path.exists(ll):
-        open(ll, 'w').write(subprocess.run([DXC, '-dumpbin', dx], capture_output=True, text=True).stdout)
+    # the text listing from stdout (some dxc builds write a binary container with -Fo)
+    open(ll, 'w').write(subprocess.run([DXC, '-dumpbin', dx], capture_output=True, text=True).stdout)
     n += 1
 print('extracted', n, 'shaders to', OUT)
